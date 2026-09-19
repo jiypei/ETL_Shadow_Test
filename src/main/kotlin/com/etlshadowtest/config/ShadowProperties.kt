@@ -1,0 +1,29 @@
+package com.etlshadowtest.config
+
+import org.springframework.boot.context.properties.ConfigurationProperties
+import org.springframework.boot.context.properties.bind.DefaultValue
+import java.time.Duration
+
+@ConfigurationProperties("shadow")
+data class ShadowProperties(
+    val staging: EnvironmentProperties,
+    val production: EnvironmentProperties,
+    val results: ResultsProperties,
+    @DefaultValue("5s") val heartbeatInterval: Duration,
+    @DefaultValue("30s") val heartbeatStaleAfter: Duration,
+    @DefaultValue("2") val maxConcurrentRuns: Int,
+)
+
+/** Connections for one Environment. Only ever set through service configuration. */
+data class EnvironmentProperties(val oracle: OracleProperties, val minio: MinioProperties)
+
+data class OracleProperties(
+    val url: String,
+    val username: String,
+    val password: String,
+    @DefaultValue("4") val maxConnections: Int,
+)
+
+data class MinioProperties(val endpoint: String, val accessKey: String, val secretKey: String, val bucket: String)
+
+data class ResultsProperties(val minio: MinioProperties)

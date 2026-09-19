@@ -1,0 +1,15 @@
+spring:
+  application:
+    name: etl-shadow-test
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
+    generator:
+      write-bigdecimal-as-plain: true
+    default-property-inclusion: always
+
+# Environment connections and credentials live here (service configuration), never in requests.
+shadow:
+  heartbeat-interval: 5s
+  heartbeat-stale-after: 30s
+  max-concurrent-runs: 2
