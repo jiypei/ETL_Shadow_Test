@@ -21,6 +21,8 @@ data class RunRecord(
     val reason: String? = null,
     val config: ComparisonConfig,
     val targets: List<TargetResult> = emptyList(),
+    /** Targets that were skipped (New Targets): they are not part of the Verdict and nothing was checked for them. */
+    val unverifiedTargets: List<String> = emptyList(),
 )
 
 data class TargetResult(

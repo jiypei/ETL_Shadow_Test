@@ -19,6 +19,8 @@ import org.springframework.stereotype.Component
 
 const val DRIFT_NOTE = "Full-Refresh Target compared whole: a Mismatch may be caused by source drift rather than a code change (ADR 0003)"
 
+const val NEW_TARGET_REASON = "New Target: there is no Production counterpart yet, so this Target was not compared and is unverified"
+
 const val TOLERANCE_STATEMENT = "Aggregate Check only: the sum (allowing the tolerance times the row count), the minimum and the maximum are compared " +
     "within the tolerance. The column is excluded from the Row Fingerprint and is not compared row by row, so a difference in individual " +
     "rows that leaves these aggregates within the tolerance is not detected (ADR 0001)"
@@ -29,7 +31,11 @@ class TargetComparator(private val sides: TargetSides, private val rowDiff: RowD
     private val log = LoggerFactory.getLogger(javaClass)
 
     fun compare(ctx: RunContext, target: TargetConfig, scope: ScopeRange?): TargetResult = try {
-        compareTarget(ctx, target, scope)
+        if (target.newTarget) {
+            TargetResult(target.name, Verdict.SKIPPED, reason = NEW_TARGET_REASON)
+        } else {
+            compareTarget(ctx, target, scope)
+        }
     } catch (e: Exception) {
         log.warn("Target {} could not be compared", target.name, e)
         TargetResult(target.name, Verdict.ERROR, reason = e.message)

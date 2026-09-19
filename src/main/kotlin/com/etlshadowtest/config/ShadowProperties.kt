@@ -34,6 +34,8 @@ data class OracleProperties(
     val username: String,
     val password: String,
     @DefaultValue("4") val maxConnections: Int,
+    /** How long to keep trying to reach the database before the affected Targets are reported as ERROR. */
+    @DefaultValue("10s") val connectionTimeout: Duration,
 )
 
 data class MinioProperties(val endpoint: String, val accessKey: String, val secretKey: String, val bucket: String)

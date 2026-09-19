@@ -28,6 +28,7 @@ class OracleSide(override val environment: String, props: OracleProperties) : Ta
             maximumPoolSize = props.maxConnections
             minimumIdle = 0
             initializationFailTimeout = -1
+            connectionTimeout = props.connectionTimeout.toMillis()
         },
     )
 

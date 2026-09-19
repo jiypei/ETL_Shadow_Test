@@ -46,7 +46,15 @@ object TestEnvironment {
     /** Where the service keeps its per-Test-Run DuckDB working space, so tests can check it is cleaned up. */
     val duckdbTempDirectory: java.nio.file.Path = java.nio.file.Files.createTempDirectory("shadow-duckdb")
 
-    fun registerProperties(registry: DynamicPropertyRegistry) {
+    /** Registers the connections of the real test systems; [overrides] replace individual properties. */
+    fun registerProperties(registry: DynamicPropertyRegistry, overrides: Map<String, String> = emptyMap()) {
+        val properties = LinkedHashMap<String, () -> Any>()
+        registerAll { name, supplier -> properties[name] = { supplier.get() } }
+        overrides.forEach { (name, value) -> properties[name] = { value } }
+        properties.forEach { (name, supplier) -> registry.add(name, supplier) }
+    }
+
+    private fun registerAll(registry: DynamicPropertyRegistry) {
         registry.add("shadow.duckdb.temp-directory") { duckdbTempDirectory.toString() }
         registry.add("shadow.staging.oracle.url") { staging.jdbcUrl }
         registry.add("shadow.staging.oracle.username") { STAGING_READER }

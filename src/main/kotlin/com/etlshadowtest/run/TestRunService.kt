@@ -55,13 +55,23 @@ class TestRunService(
             started.config.targets.map { comparator.compare(ctx, it, started.scope) }
         }
         val verdict = pipelineVerdict(targets.map { it.verdict })
-        results.write(started.copy(status = RunStatus.COMPLETED, finishedAt = now(), heartbeatAt = now(), verdict = verdict, targets = targets))
+        val unverified = targets.filter { it.verdict == Verdict.SKIPPED }.map { it.name }
+        results.write(
+            started.copy(
+                status = RunStatus.COMPLETED, finishedAt = now(), heartbeatAt = now(),
+                verdict = verdict, targets = targets, unverifiedTargets = unverified,
+            ),
+        )
     }
 }
 
-/** FAIL if any Target is FAIL, otherwise ERROR if any is ERROR, otherwise PASS. */
+/**
+ * FAIL if any Target is FAIL, otherwise ERROR if any is ERROR, otherwise PASS. SKIPPED Targets do not count,
+ * so a Pipeline in which nothing was compared is SKIPPED rather than PASS.
+ */
 fun pipelineVerdict(verdicts: List<Verdict>): Verdict = when {
     Verdict.FAIL in verdicts -> Verdict.FAIL
     Verdict.ERROR in verdicts -> Verdict.ERROR
+    verdicts.all { it == Verdict.SKIPPED } -> Verdict.SKIPPED
     else -> Verdict.PASS
 }
