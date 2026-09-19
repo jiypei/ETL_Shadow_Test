@@ -22,6 +22,8 @@ data class DuckDbProperties(
     val tempDirectory: String,
     /** DuckDB's memory is off-heap: size the container limit as JVM heap plus this per concurrent Test Run. */
     @DefaultValue("1GB") val memoryLimit: String,
+    /** Where DuckDB finds (or installs) its httpfs extension; DuckDB's default when unset. */
+    val extensionDirectory: String? = null,
 )
 
 /** Connections for one Environment. Only ever set through service configuration. */

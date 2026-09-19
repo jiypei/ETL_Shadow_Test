@@ -1,7 +1,7 @@
 package com.etlshadowtest.target
 
 import com.etlshadowtest.api.Location
-import com.etlshadowtest.duckdb.Workspace
+import com.etlshadowtest.run.RunContext
 
 /** One Environment's copy of a Target, whatever its type. Both sides of a comparison are always the same type. */
 interface TargetSide {
@@ -10,7 +10,7 @@ interface TargetSide {
     /** The Target's columns from its real metadata or schema, or null when it does not exist in this Environment. */
     fun columns(location: Location): List<ColumnMeta>?
 
-    fun aggregate(location: Location, spec: AggregateSpec, scope: BoundScope?): AggregateValues
+    fun aggregate(location: Location, spec: AggregateSpec, scope: BoundScope?, ctx: RunContext): AggregateValues
 
     /**
      * Creates [table] in the workspace with one VARCHAR column per key (k0, k1, ...) holding the key's canonical text,
@@ -21,7 +21,7 @@ interface TargetSide {
         keys: List<ColumnMeta>,
         fingerprint: List<ColumnMeta>,
         scope: BoundScope?,
-        workspace: Workspace,
+        ctx: RunContext,
         table: String,
     )
 
@@ -32,5 +32,6 @@ interface TargetSide {
         keys: List<ColumnMeta>,
         keyTuples: List<List<String?>>,
         scope: BoundScope?,
+        ctx: RunContext,
     ): Map<List<String?>, Map<String, Any?>>
 }

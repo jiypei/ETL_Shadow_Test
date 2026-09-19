@@ -2,7 +2,6 @@ package com.etlshadowtest.compare
 
 import com.etlshadowtest.api.ScopeRange
 import com.etlshadowtest.api.TargetConfig
-import com.etlshadowtest.oracle.OracleSides
 import com.etlshadowtest.run.AggregateCheckResult
 import com.etlshadowtest.run.RowDiffResult
 import com.etlshadowtest.run.RunContext
@@ -14,6 +13,7 @@ import com.etlshadowtest.target.BoundScope
 import com.etlshadowtest.target.ColumnCategory
 import com.etlshadowtest.target.ColumnMeta
 import com.etlshadowtest.target.ScopeValues
+import com.etlshadowtest.target.TargetSides
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 
@@ -25,19 +25,21 @@ const val TOLERANCE_STATEMENT = "Aggregate Check only: the sum (allowing the tol
 
 /** Compares one Target between Staging and Production. Any failure to complete is ERROR, never PASS. */
 @Component
-class TargetComparator(private val oracle: OracleSides, private val rowDiff: RowDiffEngine) {
+class TargetComparator(private val sides: TargetSides, private val rowDiff: RowDiffEngine) {
     private val log = LoggerFactory.getLogger(javaClass)
 
     fun compare(ctx: RunContext, target: TargetConfig, scope: ScopeRange?): TargetResult = try {
-        compareOracle(ctx, target, scope)
+        compareTarget(ctx, target, scope)
     } catch (e: Exception) {
         log.warn("Target {} could not be compared", target.name, e)
         TargetResult(target.name, Verdict.ERROR, reason = e.message)
     }
 
-    private fun compareOracle(ctx: RunContext, target: TargetConfig, scope: ScopeRange?): TargetResult {
-        val stagingColumns = requireNotNull(oracle.staging.columns(target.staging)) { "Target is missing in Staging" }
-        val productionColumns = requireNotNull(oracle.production.columns(target.production)) { "Target is missing in Production" }
+    private fun compareTarget(ctx: RunContext, target: TargetConfig, scope: ScopeRange?): TargetResult {
+        val staging = sides.staging(target.type)
+        val production = sides.production(target.type)
+        val stagingColumns = requireNotNull(staging.columns(target.staging)) { "Target is missing in Staging" }
+        val productionColumns = requireNotNull(production.columns(target.production)) { "Target is missing in Production" }
         val ignored = target.ignoredColumns.toSet()
         val compared = stagingColumns.filter { it.name !in ignored }
         val schemaDifferences = schemaDifferences(compared, productionColumns.filter { it.name !in ignored })
@@ -57,13 +59,13 @@ class TargetComparator(private val oracle: OracleSides, private val rowDiff: Row
             toleranceColumns = toleranceColumns,
             tolerances = target.tolerances,
         )
-        val stagingValues = oracle.staging.aggregate(target.staging, spec, bound)
-        val productionValues = oracle.production.aggregate(target.production, spec, bound)
+        val stagingValues = staging.aggregate(target.staging, spec, bound, ctx)
+        val productionValues = production.aggregate(target.production, spec, bound, ctx)
         val checks = AggregateComparison.compare(spec, stagingValues, productionValues)
         if (checks.all { it.agrees }) {
             return finish(target, Verdict.PASS, AggregateCheckResult(checks), rowDiff = RowDiffResult("SKIPPED", "Aggregate Check agreed"))
         }
-        val diff = rowDiff.run(ctx, target, oracle.staging, oracle.production, compared, keys, fingerprint, bound, target.tolerances)
+        val diff = rowDiff.run(ctx, target, staging, production, compared, keys, fingerprint, bound, target.tolerances)
         return finish(target, Verdict.FAIL, AggregateCheckResult(checks), rowDiff = diff)
     }
 

@@ -2,7 +2,7 @@ package com.etlshadowtest.oracle
 
 import com.etlshadowtest.api.Location
 import com.etlshadowtest.config.OracleProperties
-import com.etlshadowtest.duckdb.Workspace
+import com.etlshadowtest.run.RunContext
 import com.etlshadowtest.target.AggregateSpec
 import com.etlshadowtest.target.AggregateValues
 import com.etlshadowtest.target.BoundScope
@@ -45,7 +45,7 @@ class OracleSide(override val environment: String, props: OracleProperties) : Ta
     }.ifEmpty { null }
 
     /** The Aggregate Check, computed inside Oracle in one pass over the Comparison Scope. */
-    override fun aggregate(location: Location, spec: AggregateSpec, scope: BoundScope?): AggregateValues = pool.connection.use { c ->
+    override fun aggregate(location: Location, spec: AggregateSpec, scope: BoundScope?, ctx: RunContext): AggregateValues = pool.connection.use { c ->
         val selects = buildList {
             add("COUNT(*)")
             spec.sumColumns.forEach { add("SUM(${quote(it.name)})") }
@@ -78,9 +78,10 @@ class OracleSide(override val environment: String, props: OracleProperties) : Ta
         keys: List<ColumnMeta>,
         fingerprint: List<ColumnMeta>,
         scope: BoundScope?,
-        workspace: Workspace,
+        ctx: RunContext,
         table: String,
     ) {
+        val workspace = ctx.workspace()
         val definitions = keys.indices.map { "k$it VARCHAR" } + "fp VARCHAR"
         workspace.execute("CREATE TABLE $table (${definitions.joinToString(", ")})")
         val selects = keys.map { OracleSql.canonical(it) } + OracleSql.rowFingerprint(fingerprint)
@@ -109,6 +110,7 @@ class OracleSide(override val environment: String, props: OracleProperties) : Ta
         keys: List<ColumnMeta>,
         keyTuples: List<List<String?>>,
         scope: BoundScope?,
+        ctx: RunContext,
     ): Map<List<String?>, Map<String, Any?>> {
         val result = LinkedHashMap<List<String?>, Map<String, Any?>>()
         for (batch in keyTuples.chunked(FETCH_KEYS_PER_QUERY)) {

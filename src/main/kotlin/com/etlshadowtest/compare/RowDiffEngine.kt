@@ -42,8 +42,8 @@ class RowDiffEngine(private val props: ShadowProperties, private val results: Re
     ): RowDiffResult {
         val ws = ctx.workspace()
         try {
-            staging.loadKeyFingerprints(target.staging, keys, fingerprint, scope, ws, "stg")
-            production.loadKeyFingerprints(target.production, keys, fingerprint, scope, ws, "prod")
+            staging.loadKeyFingerprints(target.staging, keys, fingerprint, scope, ctx, "stg")
+            production.loadKeyFingerprints(target.production, keys, fingerprint, scope, ctx, "prod")
             return if (keys.isEmpty()) diffKeyless(ws) else diffKeyed(ctx, ws, target, staging, production, columns, keys, scope, tolerances)
         } finally {
             for (t in listOf("stg", "prod", "stg_u", "prod_u", "dup_s", "dup_p", "dup_keys", "diff", "cdiff", "sample")) {
@@ -84,8 +84,8 @@ class RowDiffEngine(private val props: ShadowProperties, private val results: Re
         val counts = counts(ws)
         val sampleKeys = Type.entries.associateWith { sampleKeys(ws, it, keyCols, limit) }
 
-        val stagingRows = staging.fetchRows(target.staging, columns, keys, sampleKeys.getValue(Type.DIFFERENT) + sampleKeys.getValue(Type.ONLY_IN_STAGING), scope)
-        val productionRows = production.fetchRows(target.production, columns, keys, sampleKeys.getValue(Type.DIFFERENT) + sampleKeys.getValue(Type.ONLY_IN_PRODUCTION), scope)
+        val stagingRows = staging.fetchRows(target.staging, columns, keys, sampleKeys.getValue(Type.DIFFERENT) + sampleKeys.getValue(Type.ONLY_IN_STAGING), scope, ctx)
+        val productionRows = production.fetchRows(target.production, columns, keys, sampleKeys.getValue(Type.DIFFERENT) + sampleKeys.getValue(Type.ONLY_IN_PRODUCTION), scope, ctx)
         val samples = Type.entries.flatMap { type ->
             sampleKeys.getValue(type).map { tuple ->
                 val s = if (type != Type.ONLY_IN_PRODUCTION) stagingRows[tuple] else null

@@ -12,6 +12,9 @@ import java.sql.DriverManager
 class Workspace(val dir: Path, memoryLimit: String, threads: Int? = null) : AutoCloseable {
     val connection: Connection
 
+    /** Environments whose MinIO access has been set up on this connection. */
+    val s3Environments = mutableSetOf<String>()
+
     init {
         Files.createDirectories(dir)
         connection = DriverManager.getConnection("jdbc:duckdb:${dir.resolve("work.duckdb")}")
