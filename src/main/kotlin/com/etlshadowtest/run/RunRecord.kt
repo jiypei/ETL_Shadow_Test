@@ -30,6 +30,7 @@ data class TargetResult(
     val notes: List<String> = emptyList(),
     val schemaDifferences: List<String> = emptyList(),
     val aggregateCheck: AggregateCheckResult? = null,
+    val rowDiff: RowDiffResult? = null,
 )
 
 data class AggregateCheckResult(val checks: List<CheckResult>)
@@ -41,4 +42,16 @@ data class CheckResult(
     val production: BigDecimal?,
     val agrees: Boolean,
     val method: String = "exact",
+)
+
+/** RAN with counts and a link to the sampled Mismatches, or SKIPPED with the reason. */
+data class RowDiffResult(
+    val status: String,
+    val reason: String? = null,
+    val onlyInStaging: Long? = null,
+    val onlyInProduction: Long? = null,
+    val differentRows: Long? = null,
+    val sampleLimitPerType: Int? = null,
+    val sampled: Int? = null,
+    val mismatchesFile: String? = null,
 )

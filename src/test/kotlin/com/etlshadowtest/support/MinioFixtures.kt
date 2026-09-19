@@ -60,4 +60,23 @@ object MinioFixtures {
     fun list(bucket: String, prefix: String): List<String> =
         client.listObjects(ListObjectsArgs.builder().bucket(bucket).prefix(prefix).recursive(true).build())
             .map { it.get().objectName() }
+
+    /** Downloads a sampled-Mismatches Parquet file from the results bucket and returns its rows. */
+    fun readMismatches(key: String): List<Map<String, Any?>> {
+        val file = java.nio.file.Files.createTempFile("mismatches", ".parquet")
+        try {
+            client.getObject(GetObjectArgs.builder().bucket(TestEnvironment.RESULTS_BUCKET).`object`(key).build())
+                .use { java.nio.file.Files.copy(it, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING) }
+            java.sql.DriverManager.getConnection("jdbc:duckdb:").use { c ->
+                c.createStatement().use { s ->
+                    s.executeQuery("SELECT * FROM read_parquet('$file')").use { rs ->
+                        val names = (1..rs.metaData.columnCount).map { rs.metaData.getColumnName(it) }
+                        return buildList { while (rs.next()) add(names.associateWith { rs.getObject(it) }) }
+                    }
+                }
+            }
+        } finally {
+            java.nio.file.Files.deleteIfExists(file)
+        }
+    }
 }

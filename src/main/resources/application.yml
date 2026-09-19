@@ -13,3 +13,7 @@ shadow:
   heartbeat-interval: 5s
   heartbeat-stale-after: 30s
   max-concurrent-runs: 2
+  mismatch-sample-size: 100
+  duckdb:
+    temp-directory: ${java.io.tmpdir}/etl-shadow-test
+    memory-limit: 1GB

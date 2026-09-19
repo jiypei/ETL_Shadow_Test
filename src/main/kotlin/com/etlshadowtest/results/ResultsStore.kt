@@ -31,6 +31,16 @@ class ResultsStore(props: ShadowProperties, private val mapper: ObjectMapper) {
         )
     }
 
+    fun mismatchesKey(pipeline: String, testRunId: String, target: String) = "results/$pipeline/$testRunId/mismatches/$target.parquet"
+
+    /** Uploads a Target's sampled Mismatches and returns their object key. */
+    fun writeMismatches(pipeline: String, testRunId: String, target: String, file: java.nio.file.Path): String {
+        ensureBucket()
+        val key = mismatchesKey(pipeline, testRunId, target)
+        client.uploadObject(io.minio.UploadObjectArgs.builder().bucket(bucket).`object`(key).filename(file.toString()).build())
+        return key
+    }
+
     fun read(pipeline: String, testRunId: String): RunRecord? = try {
         client.getObject(GetObjectArgs.builder().bucket(bucket).`object`(runKey(pipeline, testRunId)).build())
             .use { mapper.readValue(it, RunRecord::class.java) }

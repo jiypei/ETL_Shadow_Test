@@ -34,3 +34,14 @@ object ScopeValues {
         throw IllegalArgumentException("scope '$bound' value '$text' is not a valid ${column.dataType} for scope column '${column.name}'")
     }
 }
+
+object KeyValues {
+    /** Turns a key's canonical text (as produced for the Row Fingerprint) back into a value that can be bound as a parameter. */
+    fun parse(category: ColumnCategory, text: String?): Any? = when {
+        text == null -> null
+        category == ColumnCategory.NUMERIC -> BigDecimal(text)
+        category == ColumnCategory.TEXT -> text
+        category == ColumnCategory.DATE || category == ColumnCategory.TIMESTAMP -> Timestamp.valueOf(LocalDateTime.parse(text))
+        else -> throw IllegalArgumentException("A $category column cannot be used as a key")
+    }
+}

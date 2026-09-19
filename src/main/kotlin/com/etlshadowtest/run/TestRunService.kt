@@ -3,10 +3,13 @@ package com.etlshadowtest.run
 import com.etlshadowtest.api.ApiException
 import com.etlshadowtest.api.TriggerRequest
 import com.etlshadowtest.compare.TargetComparator
+import com.etlshadowtest.config.ShadowProperties
+import com.etlshadowtest.duckdb.Workspace
 import com.etlshadowtest.validation.RequestValidator
 import com.etlshadowtest.results.ResultsStore
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
+import java.nio.file.Path
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
@@ -22,6 +25,7 @@ class TestRunService(
     private val executor: RunExecutor,
     private val comparator: TargetComparator,
     private val validator: RequestValidator,
+    private val props: ShadowProperties,
 ) {
     fun trigger(request: TriggerRequest): RunRecord {
         validator.validate(request)
@@ -40,11 +44,16 @@ class TestRunService(
         return record
     }
 
+    private fun newWorkspace(testRunId: String) =
+        Workspace(Path.of(props.duckdb.tempDirectory).resolve(testRunId), props.duckdb.memoryLimit)
+
     fun get(pipeline: String, testRunId: String): RunRecord =
         results.read(pipeline, testRunId) ?: throw ApiException(HttpStatus.NOT_FOUND, "Test Run $testRunId not found")
 
     private fun execute(started: RunRecord) {
-        val targets = started.config.targets.map { comparator.compare(it, started.scope) }
+        val targets = RunContext(started.testRunId, started.pipeline, ::newWorkspace).use { ctx ->
+            started.config.targets.map { comparator.compare(ctx, it, started.scope) }
+        }
         val verdict = pipelineVerdict(targets.map { it.verdict })
         results.write(started.copy(status = RunStatus.COMPLETED, finishedAt = now(), heartbeatAt = now(), verdict = verdict, targets = targets))
     }

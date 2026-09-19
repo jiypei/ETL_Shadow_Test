@@ -43,7 +43,11 @@ object TestEnvironment {
         MinioFixtures.createBuckets(STAGING_BUCKET, PRODUCTION_BUCKET, RESULTS_BUCKET)
     }
 
+    /** Where the service keeps its per-Test-Run DuckDB working space, so tests can check it is cleaned up. */
+    val duckdbTempDirectory: java.nio.file.Path = java.nio.file.Files.createTempDirectory("shadow-duckdb")
+
     fun registerProperties(registry: DynamicPropertyRegistry) {
+        registry.add("shadow.duckdb.temp-directory") { duckdbTempDirectory.toString() }
         registry.add("shadow.staging.oracle.url") { staging.jdbcUrl }
         registry.add("shadow.staging.oracle.username") { STAGING_READER }
         registry.add("shadow.staging.oracle.password") { ACCOUNT_PASSWORD }

@@ -12,6 +12,16 @@ data class ShadowProperties(
     @DefaultValue("5s") val heartbeatInterval: Duration,
     @DefaultValue("30s") val heartbeatStaleAfter: Duration,
     @DefaultValue("2") val maxConcurrentRuns: Int,
+    /** Sampled Mismatches kept per Mismatch type and Target. */
+    @DefaultValue("100") val mismatchSampleSize: Int,
+    val duckdb: DuckDbProperties,
+)
+
+data class DuckDbProperties(
+    /** Parent of the per-Test-Run working directories; DuckDB spills here. */
+    val tempDirectory: String,
+    /** DuckDB's memory is off-heap: size the container limit as JVM heap plus this per concurrent Test Run. */
+    @DefaultValue("1GB") val memoryLimit: String,
 )
 
 /** Connections for one Environment. Only ever set through service configuration. */

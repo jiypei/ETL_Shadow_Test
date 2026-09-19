@@ -4,6 +4,8 @@ import com.etlshadowtest.api.ScopeRange
 import com.etlshadowtest.api.TargetConfig
 import com.etlshadowtest.oracle.OracleSides
 import com.etlshadowtest.run.AggregateCheckResult
+import com.etlshadowtest.run.RowDiffResult
+import com.etlshadowtest.run.RunContext
 import com.etlshadowtest.run.TargetResult
 import com.etlshadowtest.run.Verdict
 import com.etlshadowtest.target.AggregateSpec
@@ -18,17 +20,17 @@ const val DRIFT_NOTE = "Full-Refresh Target compared whole: a Mismatch may be ca
 
 /** Compares one Target between Staging and Production. Any failure to complete is ERROR, never PASS. */
 @Component
-class TargetComparator(private val oracle: OracleSides) {
+class TargetComparator(private val oracle: OracleSides, private val rowDiff: RowDiffEngine) {
     private val log = LoggerFactory.getLogger(javaClass)
 
-    fun compare(target: TargetConfig, scope: ScopeRange?): TargetResult = try {
-        compareOracle(target, scope)
+    fun compare(ctx: RunContext, target: TargetConfig, scope: ScopeRange?): TargetResult = try {
+        compareOracle(ctx, target, scope)
     } catch (e: Exception) {
         log.warn("Target {} could not be compared", target.name, e)
         TargetResult(target.name, Verdict.ERROR, reason = e.message)
     }
 
-    private fun compareOracle(target: TargetConfig, scope: ScopeRange?): TargetResult {
+    private fun compareOracle(ctx: RunContext, target: TargetConfig, scope: ScopeRange?): TargetResult {
         val stagingColumns = requireNotNull(oracle.staging.columns(target.staging)) { "Target is missing in Staging" }
         val productionColumns = requireNotNull(oracle.production.columns(target.production)) { "Target is missing in Production" }
         val ignored = target.ignoredColumns.toSet()
@@ -47,8 +49,12 @@ class TargetComparator(private val oracle: OracleSides) {
         val stagingValues = oracle.staging.aggregate(target.staging, spec, bound)
         val productionValues = oracle.production.aggregate(target.production, spec, bound)
         val checks = AggregateComparison.compare(spec, stagingValues, productionValues)
-        val verdict = if (checks.all { it.agrees }) Verdict.PASS else Verdict.FAIL
-        return finish(target, verdict, AggregateCheckResult(checks))
+        if (checks.all { it.agrees }) {
+            return finish(target, Verdict.PASS, AggregateCheckResult(checks), rowDiff = RowDiffResult("SKIPPED", "Aggregate Check agreed"))
+        }
+        val keys = target.keyColumns.map { name -> stagingColumns.first { it.name == name } }
+        val diff = rowDiff.run(ctx, target, oracle.staging, oracle.production, compared, keys, compared, bound)
+        return finish(target, Verdict.FAIL, AggregateCheckResult(checks), rowDiff = diff)
     }
 
     private fun finish(
@@ -56,12 +62,14 @@ class TargetComparator(private val oracle: OracleSides) {
         verdict: Verdict,
         aggregate: AggregateCheckResult? = null,
         schemaDifferences: List<String> = emptyList(),
+        rowDiff: RowDiffResult? = null,
     ) = TargetResult(
         name = target.name,
         verdict = verdict,
         notes = if (verdict == Verdict.FAIL && target.fullRefresh) listOf(DRIFT_NOTE) else emptyList(),
         schemaDifferences = schemaDifferences,
         aggregateCheck = aggregate,
+        rowDiff = rowDiff,
     )
 
     private fun schemaDifferences(staging: List<ColumnMeta>, production: List<ColumnMeta>): List<String> {

@@ -69,7 +69,7 @@ abstract class ShadowTestBase {
 
 fun uniqueName(prefix: String) = prefix + "_" + UUID.randomUUID().toString().replace("-", "").take(8).uppercase()
 
-/** An Oracle Target. Full-Refresh unless the caller gives it a scope column. */
+/** An Oracle Target. Full-Refresh unless the caller gives it a scope column, and keyed on ID unless told otherwise. */
 fun oracleTarget(
     name: String,
     stagingTable: String,
@@ -80,7 +80,8 @@ fun oracleTarget(
     "type" to "ORACLE",
     "staging" to mapOf("schema" to TestEnvironment.STAGING_OWNER, "table" to stagingTable),
     "production" to mapOf("schema" to TestEnvironment.PRODUCTION_OWNER, "table" to productionTable),
-) + (if ("scopeColumn" in extra) emptyMap() else mapOf("fullRefresh" to true)) + extra
+) + (if ("scopeColumn" in extra) emptyMap() else mapOf("fullRefresh" to true)) +
+    (if ("keyless" in extra) emptyMap() else mapOf("keyColumns" to listOf("ID"))) + extra
 
 fun shadowRequest(
     pipeline: String,
