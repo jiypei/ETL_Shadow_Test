@@ -1,5 +1,7 @@
 package com.etlshadowtest.support
 
+import com.etlshadowtest.auth.Principal
+import com.etlshadowtest.auth.TokenStore
 import com.etlshadowtest.run.RunExecutor
 import org.junit.jupiter.api.AfterEach
 import org.springframework.beans.factory.annotation.Autowired
@@ -32,6 +34,16 @@ class RunGateConfig {
     @Bean
     fun runGate() = RunGate()
 
+    /** The API tests are not about who is calling: any token may act for any Pipeline and Target. */
+    @Bean
+    @Primary
+    fun permissiveTokens(): TokenStore = TokenStore {
+        object : Principal {
+            override fun canAccess(pipeline: String) = true
+            override fun canUseTarget(name: String) = true
+        }
+    }
+
     @Bean
     @Primary
     fun gatedRunExecutor(gate: RunGate, @Qualifier("runExecutor") real: RunExecutor): RunExecutor =
@@ -53,7 +65,7 @@ abstract class ShadowTestBase {
     @Autowired
     protected lateinit var gate: RunGate
 
-    protected val api: ApiClient by lazy { ApiClient("http://localhost:$port", tokenFor(null)) }
+    protected val api: ApiClient by lazy { ApiClient("http://localhost:$port", tokenFor(null) ?: "test-token") }
 
     protected open fun tokenFor(pipeline: String?): String? = null
 

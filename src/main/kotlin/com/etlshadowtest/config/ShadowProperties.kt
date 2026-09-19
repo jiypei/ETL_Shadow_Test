@@ -15,7 +15,11 @@ data class ShadowProperties(
     /** Sampled Mismatches kept per Mismatch type and Target. */
     @DefaultValue("100") val mismatchSampleSize: Int,
     val duckdb: DuckDbProperties,
+    /** Caller tokens; with none configured every API call is rejected. */
+    val tokens: List<TokenProperties> = emptyList(),
 )
+
+data class TokenProperties(val token: String, val pipeline: String, val targets: List<String>)
 
 data class DuckDbProperties(
     /** Parent of the per-Test-Run working directories; DuckDB spills here. */
