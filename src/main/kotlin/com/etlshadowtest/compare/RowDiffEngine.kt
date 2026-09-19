@@ -38,12 +38,13 @@ class RowDiffEngine(private val props: ShadowProperties, private val results: Re
         keys: List<ColumnMeta>,
         fingerprint: List<ColumnMeta>,
         scope: BoundScope?,
+        tolerances: Map<String, BigDecimal> = emptyMap(),
     ): RowDiffResult {
         val ws = ctx.workspace()
         try {
             staging.loadKeyFingerprints(target.staging, keys, fingerprint, scope, ws, "stg")
             production.loadKeyFingerprints(target.production, keys, fingerprint, scope, ws, "prod")
-            return if (keys.isEmpty()) diffKeyless(ws) else diffKeyed(ctx, ws, target, staging, production, columns, keys, scope)
+            return if (keys.isEmpty()) diffKeyless(ws) else diffKeyed(ctx, ws, target, staging, production, columns, keys, scope, tolerances)
         } finally {
             for (t in listOf("stg", "prod", "stg_u", "prod_u", "dup_s", "dup_p", "dup_keys", "diff", "cdiff", "sample")) {
                 runCatching { ws.execute("DROP TABLE IF EXISTS $t") }
@@ -60,6 +61,7 @@ class RowDiffEngine(private val props: ShadowProperties, private val results: Re
         columns: List<ColumnMeta>,
         keys: List<ColumnMeta>,
         scope: BoundScope?,
+        tolerances: Map<String, BigDecimal>,
     ): RowDiffResult {
         val keyCols = keys.indices.map { "k$it" }
         val keyList = keyCols.joinToString(", ")
@@ -93,7 +95,7 @@ class RowDiffEngine(private val props: ShadowProperties, private val results: Re
                     type,
                     keys.associate { it.name to keyRow?.get(it.name) },
                     s, p,
-                    if (s != null && p != null) columns.filter { !equal(s[it.name], p[it.name]) }.map { it.name } else emptyList(),
+                    if (s != null && p != null) columns.filter { !equal(s[it.name], p[it.name], tolerances[it.name]) }.map { it.name } else emptyList(),
                 )
             }
         }
@@ -186,5 +188,6 @@ class RowDiffEngine(private val props: ShadowProperties, private val results: Re
         return results.writeMismatches(ctx.pipeline, ctx.testRunId, targetName, file)
     }
 
-    private fun equal(a: Any?, b: Any?) = if (a is BigDecimal && b is BigDecimal) a.compareTo(b) == 0 else a == b
+    private fun equal(a: Any?, b: Any?, tolerance: BigDecimal?) =
+        if (a is BigDecimal && b is BigDecimal) a.subtract(b).abs() <= (tolerance ?: BigDecimal.ZERO) else a == b
 }

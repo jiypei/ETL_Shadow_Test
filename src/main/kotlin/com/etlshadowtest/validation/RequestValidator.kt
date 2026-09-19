@@ -35,7 +35,10 @@ class RequestValidator(private val oracle: OracleSides) {
                 }
             }
         }
-        for (target in request.config.targets) problems += unsupportedTypes(target)
+        for (target in request.config.targets) {
+            problems += unsupportedTypes(target)
+            problems += toleranceProblems(target)
+        }
         if (problems.isNotEmpty()) throw ApiException(HttpStatus.BAD_REQUEST, "Invalid request: ${problems.first()}", problems)
     }
 
@@ -55,6 +58,22 @@ class RequestValidator(private val oracle: OracleSides) {
         val columns = oracle.staging.columns(target.staging) ?: oracle.production.columns(target.production) ?: return emptyList()
         return columns.filter { it.category == ColumnCategory.OTHER && it.name !in target.ignoredColumns }.map {
             "Target '${target.name}': column '${it.name}' has type ${it.dataType}, which cannot be compared; add it to ignoredColumns"
+        }
+    }
+
+    private fun toleranceProblems(target: TargetConfig): List<String> {
+        if (target.tolerances.isEmpty()) return emptyList()
+        val columns = oracle.staging.columns(target.staging) ?: oracle.production.columns(target.production)
+        return target.tolerances.mapNotNull { (name, tolerance) ->
+            val column = columns?.firstOrNull { it.name == name }
+            when {
+                tolerance.signum() < 0 -> "Target '${target.name}': tolerance for column '$name' must not be negative"
+                columns != null && column == null -> "Target '${target.name}': tolerance column '$name' does not exist"
+                column != null && column.category != ColumnCategory.NUMERIC -> "Target '${target.name}': tolerance column '$name' is not numeric (${column.dataType})"
+                name in target.keyColumns -> "Target '${target.name}': key column '$name' cannot have a tolerance"
+                name in target.ignoredColumns -> "Target '${target.name}': ignored column '$name' cannot have a tolerance"
+                else -> null
+            }
         }
     }
 }

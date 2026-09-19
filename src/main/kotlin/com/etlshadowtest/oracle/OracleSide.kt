@@ -50,6 +50,7 @@ class OracleSide(override val environment: String, props: OracleProperties) : Ta
             add("COUNT(*)")
             spec.sumColumns.forEach { add("SUM(${quote(it.name)})") }
             spec.nullColumns.forEach { add("COUNT(${quote(it.name)})") }
+            spec.toleranceColumns.forEach { add("MIN(${quote(it.name)})"); add("MAX(${quote(it.name)})") }
             if (spec.fingerprintColumns.isNotEmpty()) add(OracleSql.checksum(spec.fingerprintColumns))
             if (spec.keyColumns.isNotEmpty()) add("COUNT(DISTINCT ${OracleSql.rowFingerprint(spec.keyColumns)})")
         }
@@ -62,9 +63,12 @@ class OracleSide(override val environment: String, props: OracleProperties) : Ta
                 val rowCount = rs.getBigDecimal(i++).longValueExact()
                 val sums = spec.sumColumns.associate { it.name to rs.getBigDecimal(i++) }
                 val counts = spec.nullColumns.associate { it.name to rs.getBigDecimal(i++).longValueExact() }
+                val mins = LinkedHashMap<String, java.math.BigDecimal?>()
+                val maxs = LinkedHashMap<String, java.math.BigDecimal?>()
+                for (column in spec.toleranceColumns) { mins[column.name] = rs.getBigDecimal(i++); maxs[column.name] = rs.getBigDecimal(i++) }
                 val checksum = if (spec.fingerprintColumns.isNotEmpty()) rs.getBigDecimal(i++) else null
                 val duplicates = if (spec.keyColumns.isNotEmpty()) rowCount - rs.getBigDecimal(i).longValueExact() else null
-                AggregateValues(rowCount, sums, counts, checksum, duplicates)
+                AggregateValues(rowCount, sums, counts, mins, maxs, checksum, duplicates)
             }
         }
     }

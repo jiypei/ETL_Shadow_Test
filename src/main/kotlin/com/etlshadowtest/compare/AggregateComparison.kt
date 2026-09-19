@@ -9,8 +9,16 @@ import java.math.BigDecimal
 object AggregateComparison {
     fun compare(spec: AggregateSpec, staging: AggregateValues, production: AggregateValues): List<CheckResult> = buildList {
         add(check("row_count", null, staging.rowCount.toBigDecimal(), production.rowCount.toBigDecimal()))
+        val rows = maxOf(staging.rowCount, production.rowCount).toBigDecimal()
         for (column in spec.sumColumns) {
-            add(check("sum", column.name, staging.sums[column.name], production.sums[column.name]))
+            val tolerance = spec.tolerances[column.name]
+            // Every row within the tolerance means the sums can differ by at most tolerance times the row count.
+            add(check("sum", column.name, staging.sums[column.name], production.sums[column.name], tolerance?.multiply(rows), tolerance))
+        }
+        for (column in spec.toleranceColumns) {
+            val tolerance = spec.tolerances.getValue(column.name)
+            add(check("min", column.name, staging.mins[column.name], production.mins[column.name], tolerance, tolerance))
+            add(check("max", column.name, staging.maxs[column.name], production.maxs[column.name], tolerance, tolerance))
         }
         for (column in spec.nullColumns) {
             val s = staging.rowCount - staging.nonNullCounts.getValue(column.name)
@@ -26,8 +34,23 @@ object AggregateComparison {
         }
     }
 
-    private fun check(name: String, column: String?, staging: BigDecimal?, production: BigDecimal?) =
-        CheckResult(name, column, staging, production, agrees = equalDecimals(staging, production))
+    /** [allowedDifference] is null for an exact check. */
+    private fun check(
+        name: String,
+        column: String?,
+        staging: BigDecimal?,
+        production: BigDecimal?,
+        allowedDifference: BigDecimal? = null,
+        tolerance: BigDecimal? = null,
+    ) = CheckResult(
+        name, column, staging, production,
+        agrees = if (allowedDifference == null) equalDecimals(staging, production) else withinTolerance(staging, production, allowedDifference),
+        method = if (allowedDifference == null) "exact" else "tolerance",
+        tolerance = tolerance,
+    )
+
+    private fun withinTolerance(a: BigDecimal?, b: BigDecimal?, allowed: BigDecimal) =
+        if (a == null || b == null) a == b else a.subtract(b).abs() <= allowed
 
     /** Exact decimal equality; NULL equals NULL, and NULL equals nothing else. */
     fun equalDecimals(a: BigDecimal?, b: BigDecimal?) = if (a == null || b == null) a == b else a.compareTo(b) == 0

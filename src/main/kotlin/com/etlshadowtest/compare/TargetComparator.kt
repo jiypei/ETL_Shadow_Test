@@ -7,6 +7,7 @@ import com.etlshadowtest.run.AggregateCheckResult
 import com.etlshadowtest.run.RowDiffResult
 import com.etlshadowtest.run.RunContext
 import com.etlshadowtest.run.TargetResult
+import com.etlshadowtest.run.ToleranceReport
 import com.etlshadowtest.run.Verdict
 import com.etlshadowtest.target.AggregateSpec
 import com.etlshadowtest.target.BoundScope
@@ -17,6 +18,10 @@ import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 
 const val DRIFT_NOTE = "Full-Refresh Target compared whole: a Mismatch may be caused by source drift rather than a code change (ADR 0003)"
+
+const val TOLERANCE_STATEMENT = "Aggregate Check only: the sum (allowing the tolerance times the row count), the minimum and the maximum are compared " +
+    "within the tolerance. The column is excluded from the Row Fingerprint and is not compared row by row, so a difference in individual " +
+    "rows that leaves these aggregates within the tolerance is not detected (ADR 0001)"
 
 /** Compares one Target between Staging and Production. Any failure to complete is ERROR, never PASS. */
 @Component
@@ -42,11 +47,15 @@ class TargetComparator(private val oracle: OracleSides, private val rowDiff: Row
 
         val bound = boundScope(target, scope, stagingColumns)
         val keys = target.keyColumns.map { name -> stagingColumns.first { it.name == name } }
+        val toleranceColumns = compared.filter { it.name in target.tolerances }
+        val fingerprint = compared.filter { it.name !in target.tolerances }
         val spec = AggregateSpec(
             sumColumns = compared.filter { it.category == ColumnCategory.NUMERIC },
             nullColumns = compared,
-            fingerprintColumns = compared,
+            fingerprintColumns = fingerprint,
             keyColumns = keys,
+            toleranceColumns = toleranceColumns,
+            tolerances = target.tolerances,
         )
         val stagingValues = oracle.staging.aggregate(target.staging, spec, bound)
         val productionValues = oracle.production.aggregate(target.production, spec, bound)
@@ -54,7 +63,7 @@ class TargetComparator(private val oracle: OracleSides, private val rowDiff: Row
         if (checks.all { it.agrees }) {
             return finish(target, Verdict.PASS, AggregateCheckResult(checks), rowDiff = RowDiffResult("SKIPPED", "Aggregate Check agreed"))
         }
-        val diff = rowDiff.run(ctx, target, oracle.staging, oracle.production, compared, keys, compared, bound)
+        val diff = rowDiff.run(ctx, target, oracle.staging, oracle.production, compared, keys, fingerprint, bound, target.tolerances)
         return finish(target, Verdict.FAIL, AggregateCheckResult(checks), rowDiff = diff)
     }
 
@@ -65,6 +74,7 @@ class TargetComparator(private val oracle: OracleSides, private val rowDiff: Row
         schemaDifferences: List<String> = emptyList(),
         rowDiff: RowDiffResult? = null,
     ) = TargetResult(
+        toleranceColumns = target.tolerances.map { (column, tolerance) -> ToleranceReport(column, tolerance, TOLERANCE_STATEMENT) },
         name = target.name,
         verdict = verdict,
         notes = if (verdict == Verdict.FAIL && target.fullRefresh) listOf(DRIFT_NOTE) else emptyList(),

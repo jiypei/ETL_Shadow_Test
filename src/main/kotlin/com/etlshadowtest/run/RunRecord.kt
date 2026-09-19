@@ -31,7 +31,11 @@ data class TargetResult(
     val schemaDifferences: List<String> = emptyList(),
     val aggregateCheck: AggregateCheckResult? = null,
     val rowDiff: RowDiffResult? = null,
+    val toleranceColumns: List<ToleranceReport> = emptyList(),
 )
+
+/** How a tolerance column was checked, so nobody assumes it was compared row by row. */
+data class ToleranceReport(val column: String, val tolerance: BigDecimal, val checkedBy: String)
 
 data class AggregateCheckResult(val checks: List<CheckResult>)
 
@@ -42,6 +46,7 @@ data class CheckResult(
     val production: BigDecimal?,
     val agrees: Boolean,
     val method: String = "exact",
+    val tolerance: BigDecimal? = null,
 )
 
 /** RAN with counts and a link to the sampled Mismatches, or SKIPPED with the reason. */
