@@ -20,6 +20,7 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 
 private val TIMESTAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC)
@@ -36,6 +37,7 @@ class TestRunService(
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
     private val active = ConcurrentHashMap<String, ActiveRun>()
+    private val slots = Semaphore(props.maxConcurrentRuns.coerceAtLeast(1))
     private val heartbeats = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "heartbeat").apply { isDaemon = true } }
 
     @PostConstruct
@@ -72,15 +74,29 @@ class TestRunService(
             scope = request.scope,
             config = request.config,
         )
+        // Duckdb memory and temp disk are sized for the cap, so a trigger beyond it is turned away, not queued (ADR 0004).
+        if (!slots.tryAcquire()) {
+            throw ApiException(
+                HttpStatus.TOO_MANY_REQUESTS,
+                "The service is at capacity (${props.maxConcurrentRuns} Test Runs in progress). No Test Run was created; try again later.",
+                headers = mapOf("Retry-After" to props.retryAfter.seconds.toString()),
+            )
+        }
         val run = ActiveRun(record, results)
-        run.start()
-        active[record.testRunId] = run
-        executor.execute { execute(run) }
+        try {
+            run.start()
+            active[record.testRunId] = run
+            executor.execute { execute(run) }
+        } catch (e: Throwable) {
+            active.remove(record.testRunId)
+            slots.release()
+            throw e
+        }
         return record
     }
 
     private fun newWorkspace(testRunId: String) =
-        Workspace(Path.of(props.duckdb.tempDirectory).resolve(testRunId), props.duckdb.memoryLimit)
+        Workspace(Path.of(props.duckdb.tempDirectory).resolve(testRunId), props.duckdb.memoryLimit, props.duckdb.threads)
 
     fun get(pipeline: String, testRunId: String): RunRecord =
         results.read(pipeline, testRunId)?.let(::reportAbandoned) ?: throw ApiException(HttpStatus.NOT_FOUND, "Test Run $testRunId not found")
@@ -116,6 +132,7 @@ class TestRunService(
             log.error("Could not store the result of Test Run {}", started.testRunId, e)
         } finally {
             active.remove(started.testRunId)
+            slots.release()
         }
     }
 }

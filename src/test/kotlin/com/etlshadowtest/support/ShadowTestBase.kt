@@ -55,6 +55,8 @@ class RunGateConfig {
     properties = [
         "shadow.heartbeat-interval=300ms",
         "shadow.heartbeat-stale-after=6s",
+        // Generous, so that Test Runs left over from an earlier test never make a later test hit the cap.
+        "shadow.max-concurrent-runs=16",
     ],
 )
 @Import(RunGateConfig::class)

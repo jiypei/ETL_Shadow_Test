@@ -11,7 +11,10 @@ data class ShadowProperties(
     val results: ResultsProperties,
     @DefaultValue("5s") val heartbeatInterval: Duration,
     @DefaultValue("30s") val heartbeatStaleAfter: Duration,
+    /** Test Runs in progress at once. A trigger arriving at the cap is rejected with 429 (ADR 0004). */
     @DefaultValue("2") val maxConcurrentRuns: Int,
+    /** What a rejected caller is told to wait before trying again. */
+    @DefaultValue("30s") val retryAfter: Duration,
     /** Sampled Mismatches kept per Mismatch type and Target. */
     @DefaultValue("100") val mismatchSampleSize: Int,
     val duckdb: DuckDbProperties,
@@ -28,6 +31,8 @@ data class DuckDbProperties(
     @DefaultValue("1GB") val memoryLimit: String,
     /** Where DuckDB finds (or installs) its httpfs extension; DuckDB's default when unset. */
     val extensionDirectory: String? = null,
+    /** DuckDB threads per Test Run; each thread needs its own buffers, so fewer threads also means less memory. */
+    @DefaultValue("2") val threads: Int,
 )
 
 /** Connections for one Environment. Only ever set through service configuration. */

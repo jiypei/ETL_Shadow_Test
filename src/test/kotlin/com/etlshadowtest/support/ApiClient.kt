@@ -8,7 +8,7 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 
-class ApiResponse(val status: Int, val body: JsonNode?, val raw: String) {
+class ApiResponse(val status: Int, val body: JsonNode?, val raw: String, val headers: Map<String, String> = emptyMap()) {
     operator fun get(field: String): JsonNode? = body?.get(field)
     val testRunId: String get() = body!!["testRunId"].asText()
 }
@@ -58,6 +58,6 @@ class ApiClient(private val baseUrl: String, private val token: String? = null) 
     private fun send(b: HttpRequest.Builder): ApiResponse {
         val r = http.send(b.build(), HttpResponse.BodyHandlers.ofString())
         val node = runCatching { mapper.readTree(r.body()) }.getOrNull()
-        return ApiResponse(r.statusCode(), node, r.body())
+        return ApiResponse(r.statusCode(), node, r.body(), r.headers().map().mapValues { it.value.first() })
     }
 }
