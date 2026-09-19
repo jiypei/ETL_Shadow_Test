@@ -95,6 +95,9 @@ class OracleDb(container: OracleContainer, val owner: String, val reader: String
 
     fun systemExecute(sql: String) = connect("system", TestEnvironment.SYSTEM_PASSWORD).use { it.createStatement().use { s -> s.execute(sql) } }
 
+    /** For grants on SYS-owned objects, which even SYSTEM may not make. */
+    fun sysdbaExecute(sql: String) = connect("sys as sysdba", TestEnvironment.SYSTEM_PASSWORD).use { it.createStatement().use { s -> s.execute(sql) } }
+
     /** Creates an owner table (or view via [ddl] override) and lets the reader account select from it. */
     fun createTable(name: String, columns: String) {
         ownerConnection().use { c ->

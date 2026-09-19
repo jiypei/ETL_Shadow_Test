@@ -45,6 +45,12 @@ data class OracleProperties(
     @DefaultValue("4") val maxConnections: Int,
     /** How long to keep trying to reach the database before the affected Targets are reported as ERROR. */
     @DefaultValue("10s") val connectionTimeout: Duration,
+    /** When set, every query goes here instead of [url]. Meant for the Production read replica, so the primary is spared. */
+    val replicaUrl: String? = null,
+    /** Queries running at once against this database, across all Test Runs (never more than [maxConnections]). */
+    @DefaultValue("2") val maxParallelQueries: Int,
+    /** A query running longer than this is cancelled and the affected Target is reported as ERROR. */
+    @DefaultValue("30m") val queryTimeout: Duration,
 )
 
 data class MinioProperties(val endpoint: String, val accessKey: String, val secretKey: String, val bucket: String)

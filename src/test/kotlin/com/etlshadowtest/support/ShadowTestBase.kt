@@ -50,6 +50,10 @@ class RunGateConfig {
         RunExecutor { task -> real.execute { gate.await(); task.run() } }
 }
 
+/**
+ * Everything a Test Run test needs except where the service's connections come from, so a test that must change
+ * one of them (an unreachable Production, a replica, a limit) registers its own set without any competing default.
+ */
 @SpringBootTest(
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
     properties = [
@@ -60,20 +64,21 @@ class RunGateConfig {
     ],
 )
 @Import(RunGateConfig::class)
-abstract class ShadowTestBase {
+abstract class ShadowTestSupport {
     @LocalServerPort
     protected var port: Int = 0
 
     @Autowired
     protected lateinit var gate: RunGate
 
-    protected val api: ApiClient by lazy { ApiClient("http://localhost:$port", tokenFor(null) ?: "test-token") }
-
-    protected open fun tokenFor(pipeline: String?): String? = null
+    protected val api: ApiClient by lazy { ApiClient("http://localhost:$port", "test-token") }
 
     @AfterEach
     fun openGate() = gate.release()
+}
 
+/** The usual setup: the service talks to the real test systems exactly as they are. */
+abstract class ShadowTestBase : ShadowTestSupport() {
     companion object {
         @JvmStatic
         @DynamicPropertySource

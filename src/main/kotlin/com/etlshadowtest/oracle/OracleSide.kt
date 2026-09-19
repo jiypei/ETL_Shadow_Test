@@ -13,16 +13,20 @@ import com.etlshadowtest.target.TargetSide
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.duckdb.DuckDBConnection
+import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.ResultSet
+import java.sql.SQLException
+import java.sql.SQLTimeoutException
+import java.util.concurrent.Semaphore
 import java.time.OffsetDateTime
 
 /** Oracle access for one Environment. */
-class OracleSide(override val environment: String, props: OracleProperties) : TargetSide, AutoCloseable {
+class OracleSide(override val environment: String, private val props: OracleProperties) : TargetSide, AutoCloseable {
     private val pool = HikariDataSource(
         HikariConfig().apply {
             poolName = "oracle-$environment"
-            jdbcUrl = props.url
+            jdbcUrl = props.replicaUrl ?: props.url
             username = props.username
             password = props.password
             maximumPoolSize = props.maxConnections
@@ -32,9 +36,36 @@ class OracleSide(override val environment: String, props: OracleProperties) : Ta
         },
     )
 
+    private val parallelQueries = Semaphore(minOf(props.maxParallelQueries, props.maxConnections).coerceAtLeast(1))
+    private val timeoutSeconds = props.queryTimeout.seconds.coerceIn(1, Int.MAX_VALUE.toLong()).toInt()
+
+    /**
+     * Runs read-only work on a pooled connection. At most the configured number of queries run at once across all
+     * Test Runs, and a query that runs past the time limit is cancelled and reported as [QueryTimeoutException].
+     */
+    private fun <T> read(block: (Connection) -> T): T {
+        parallelQueries.acquire()
+        try {
+            return pool.connection.use(block)
+        } catch (e: SQLTimeoutException) {
+            throw QueryTimeoutException(environment, timeoutSeconds, e)
+        } catch (e: SQLException) {
+            if (e.errorCode == ORA_USER_REQUESTED_CANCEL) throw QueryTimeoutException(environment, timeoutSeconds, e)
+            throw e
+        } finally {
+            parallelQueries.release()
+        }
+    }
+
+    /** Every statement this service sends is a SELECT. This is the last line of defence behind the read-only account. */
+    private fun Connection.select(sql: String): PreparedStatement {
+        require(sql.trimStart().startsWith("SELECT", ignoreCase = true)) { "Only SELECT statements may be sent to $environment" }
+        return prepareStatement(sql).also { it.queryTimeout = timeoutSeconds }
+    }
+
     /** The table's columns from Oracle's metadata, or null when the table does not exist (or is not visible). */
-    override fun columns(location: Location): List<ColumnMeta>? = pool.connection.use { c ->
-        c.prepareStatement(
+    override fun columns(location: Location): List<ColumnMeta>? = read { c ->
+        c.select(
             "SELECT COLUMN_NAME, DATA_TYPE FROM ALL_TAB_COLUMNS WHERE OWNER = ? AND TABLE_NAME = ? ORDER BY COLUMN_ID",
         ).use { ps ->
             ps.setString(1, location.schema)
@@ -46,7 +77,7 @@ class OracleSide(override val environment: String, props: OracleProperties) : Ta
     }.ifEmpty { null }
 
     /** The Aggregate Check, computed inside Oracle in one pass over the Comparison Scope. */
-    override fun aggregate(location: Location, spec: AggregateSpec, scope: BoundScope?, ctx: RunContext): AggregateValues = pool.connection.use { c ->
+    override fun aggregate(location: Location, spec: AggregateSpec, scope: BoundScope?, ctx: RunContext): AggregateValues = read { c ->
         val selects = buildList {
             add("COUNT(*)")
             spec.sumColumns.forEach { add("SUM(${quote(it.name)})") }
@@ -56,7 +87,7 @@ class OracleSide(override val environment: String, props: OracleProperties) : Ta
             if (spec.keyColumns.isNotEmpty()) add("COUNT(DISTINCT ${OracleSql.rowFingerprint(spec.keyColumns)})")
         }
         val sql = "SELECT ${selects.joinToString(", ")} FROM ${qualified(location)}${scopeClause(scope)}"
-        c.prepareStatement(sql).use { ps ->
+        c.select(sql).use { ps ->
             bindScope(ps, scope)
             ps.executeQuery().use { rs ->
                 rs.next()
@@ -89,8 +120,8 @@ class OracleSide(override val environment: String, props: OracleProperties) : Ta
         val sql = "SELECT ${selects.joinToString(", ")} FROM ${qualified(location)}${scopeClause(scope)}"
         val duck = workspace.connection as DuckDBConnection
         duck.createAppender(DuckDBConnection.DEFAULT_SCHEMA, table).use { appender ->
-            pool.connection.use { c ->
-                c.prepareStatement(sql).use { ps ->
+            read { c ->
+                c.select(sql).use { ps ->
                     ps.fetchSize = FETCH_SIZE
                     bindScope(ps, scope)
                     ps.executeQuery().use { rs ->
@@ -119,8 +150,8 @@ class OracleSide(override val environment: String, props: OracleProperties) : Ta
             val selects = keys.map { OracleSql.canonical(it) } + columns.map { quote(it.name) }
             val sql = "SELECT ${selects.joinToString(", ")} FROM ${qualified(location)} WHERE ($keyMatch)" +
                 if (scope == null) "" else " AND ${quote(scope.column)} >= ? AND ${quote(scope.column)} < ?"
-            pool.connection.use { c ->
-                c.prepareStatement(sql).use { ps ->
+            read { c ->
+                c.select(sql).use { ps ->
                     var i = 1
                     for (tuple in batch) tuple.forEachIndexed { k, text -> ps.setObject(i++, KeyValues.parse(keys[k].category, text)) }
                     if (scope != null) { ps.setObject(i++, scope.from); ps.setObject(i, scope.to) }
@@ -159,6 +190,7 @@ class OracleSide(override val environment: String, props: OracleProperties) : Ta
 
     companion object {
         private const val FETCH_SIZE = 10_000
+        private const val ORA_USER_REQUESTED_CANCEL = 1013
         private const val FETCH_KEYS_PER_QUERY = 100
 
         fun quote(identifier: String): String {
@@ -178,3 +210,7 @@ class OracleSide(override val environment: String, props: OracleProperties) : Ta
         }
     }
 }
+
+/** A query outran its time limit and was cancelled. */
+class QueryTimeoutException(environment: String, seconds: Int, cause: Throwable) :
+    RuntimeException("A query against ${environment.replaceFirstChar { it.uppercase() }} exceeded the time limit of ${seconds}s and was cancelled", cause)

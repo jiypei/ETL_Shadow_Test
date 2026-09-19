@@ -1,7 +1,7 @@
 package com.etlshadowtest
 
 import com.etlshadowtest.support.ParquetFixtures
-import com.etlshadowtest.support.ShadowTestBase
+import com.etlshadowtest.support.ShadowTestSupport
 import com.etlshadowtest.support.TestEnvironment
 import com.etlshadowtest.support.TestEnvironment.staging
 import com.etlshadowtest.support.oracleTarget
@@ -14,7 +14,7 @@ import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 
 /** Production Oracle points at a closed port, as if its database were down. */
-class UnreachableProductionTest : ShadowTestBase() {
+class UnreachableProductionTest : ShadowTestSupport() {
     companion object {
         @JvmStatic
         @DynamicPropertySource
@@ -29,8 +29,9 @@ class UnreachableProductionTest : ShadowTestBase() {
 
     @Test
     fun `a source database that cannot be reached gives ERROR for the affected Targets and the other Targets still complete`() {
+        // The table exists on both sides, so the only reason for ERROR can be that Production cannot be reached.
         val table = uniqueName("DOWN")
-        staging.createTable(table, "ID NUMBER")
+        for (db in listOf(staging, TestEnvironment.production)) db.createTable(table, "ID NUMBER")
         val path = uniqueName("up").lowercase()
         ParquetFixtures.staging(path, "ID BIGINT", listOf(listOf(1L)))
         ParquetFixtures.production(path, "ID BIGINT", listOf(listOf(1L)))
