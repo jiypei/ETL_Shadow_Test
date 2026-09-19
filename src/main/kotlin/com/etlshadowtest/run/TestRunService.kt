@@ -7,13 +7,20 @@ import com.etlshadowtest.config.ShadowProperties
 import com.etlshadowtest.duckdb.Workspace
 import com.etlshadowtest.validation.RequestValidator
 import com.etlshadowtest.results.ResultsStore
+import jakarta.annotation.PostConstruct
+import jakarta.annotation.PreDestroy
+import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import java.nio.file.Path
+import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 private val TIMESTAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC)
 
@@ -27,6 +34,32 @@ class TestRunService(
     private val validator: RequestValidator,
     private val props: ShadowProperties,
 ) {
+    private val log = LoggerFactory.getLogger(javaClass)
+    private val active = ConcurrentHashMap<String, ActiveRun>()
+    private val heartbeats = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "heartbeat").apply { isDaemon = true } }
+
+    @PostConstruct
+    fun startHeartbeats() {
+        val period = props.heartbeatInterval.toMillis().coerceAtLeast(50)
+        heartbeats.scheduleWithFixedDelay(::beat, period, period, TimeUnit.MILLISECONDS)
+    }
+
+    @PreDestroy
+    fun stopHeartbeats() {
+        heartbeats.shutdownNow()
+    }
+
+    /** Refreshes the heartbeat of every Test Run this instance is running, including ones waiting to start. */
+    private fun beat() {
+        for (run in active.values) {
+            try {
+                run.heartbeat()
+            } catch (e: Exception) {
+                log.warn("Could not write the heartbeat of Test Run {}", run.record.testRunId, e)
+            }
+        }
+    }
+
     fun trigger(request: TriggerRequest): RunRecord {
         validator.validate(request)
         val ts = now()
@@ -39,8 +72,10 @@ class TestRunService(
             scope = request.scope,
             config = request.config,
         )
-        results.write(record)
-        executor.execute { execute(record) }
+        val run = ActiveRun(record, results)
+        run.start()
+        active[record.testRunId] = run
+        executor.execute { execute(run) }
         return record
     }
 
@@ -48,20 +83,40 @@ class TestRunService(
         Workspace(Path.of(props.duckdb.tempDirectory).resolve(testRunId), props.duckdb.memoryLimit)
 
     fun get(pipeline: String, testRunId: String): RunRecord =
-        results.read(pipeline, testRunId) ?: throw ApiException(HttpStatus.NOT_FOUND, "Test Run $testRunId not found")
+        results.read(pipeline, testRunId)?.let(::reportAbandoned) ?: throw ApiException(HttpStatus.NOT_FOUND, "Test Run $testRunId not found")
 
-    private fun execute(started: RunRecord) {
-        val targets = RunContext(started.testRunId, started.pipeline, ::newWorkspace).use { ctx ->
-            started.config.targets.map { comparator.compare(ctx, it, started.scope) }
-        }
-        val verdict = pipelineVerdict(targets.map { it.verdict })
-        val unverified = targets.filter { it.verdict == Verdict.SKIPPED }.map { it.name }
-        results.write(
-            started.copy(
-                status = RunStatus.COMPLETED, finishedAt = now(), heartbeatAt = now(),
-                verdict = verdict, targets = targets, unverifiedTargets = unverified,
-            ),
+    /** A Test Run whose heartbeat stopped is not running any more, whatever its record says: report it as ERROR (abandoned). */
+    fun reportAbandoned(record: RunRecord): RunRecord {
+        if (record.status != RunStatus.RUNNING) return record
+        val silentFor = Duration.between(Instant.parse(record.heartbeatAt), Instant.now())
+        if (silentFor <= props.heartbeatStaleAfter) return record
+        return record.copy(
+            status = RunStatus.ABANDONED,
+            verdict = Verdict.ERROR,
+            reason = "Test Run abandoned: its heartbeat stopped at ${record.heartbeatAt}, so the service instance running it is presumed dead. Trigger a new Test Run.",
         )
+    }
+
+    private fun execute(run: ActiveRun) {
+        val started = run.record
+        var final: RunRecord
+        try {
+            val targets = RunContext(started.testRunId, started.pipeline, ::newWorkspace).use { ctx ->
+                started.config.targets.map { comparator.compare(ctx, it, started.scope) }
+            }
+            val unverified = targets.filter { it.verdict == Verdict.SKIPPED }.map { it.name }
+            final = started.copy(verdict = pipelineVerdict(targets.map { it.verdict }), targets = targets, unverifiedTargets = unverified)
+        } catch (e: Throwable) {
+            log.error("Test Run {} failed", started.testRunId, e)
+            final = started.copy(verdict = Verdict.ERROR, reason = "Test Run failed: ${e.message}")
+        }
+        try {
+            run.finish(final.copy(status = RunStatus.COMPLETED, finishedAt = now(), heartbeatAt = now()))
+        } catch (e: Exception) {
+            log.error("Could not store the result of Test Run {}", started.testRunId, e)
+        } finally {
+            active.remove(started.testRunId)
+        }
     }
 }
 
