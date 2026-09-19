@@ -28,6 +28,7 @@ data class TargetResult(
     val verdict: Verdict,
     val reason: String? = null,
     val notes: List<String> = emptyList(),
+    val schemaDifferences: List<String> = emptyList(),
     val aggregateCheck: AggregateCheckResult? = null,
 )
 
@@ -39,4 +40,5 @@ data class CheckResult(
     val staging: BigDecimal?,
     val production: BigDecimal?,
     val agrees: Boolean,
+    val method: String = "exact",
 )

@@ -4,10 +4,12 @@ import com.etlshadowtest.api.ScopeRange
 import com.etlshadowtest.api.TargetConfig
 import com.etlshadowtest.oracle.OracleSides
 import com.etlshadowtest.run.AggregateCheckResult
-import com.etlshadowtest.run.CheckResult
 import com.etlshadowtest.run.TargetResult
 import com.etlshadowtest.run.Verdict
+import com.etlshadowtest.target.AggregateSpec
 import com.etlshadowtest.target.BoundScope
+import com.etlshadowtest.target.ColumnCategory
+import com.etlshadowtest.target.ColumnMeta
 import com.etlshadowtest.target.ScopeValues
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
@@ -20,28 +22,64 @@ class TargetComparator(private val oracle: OracleSides) {
     private val log = LoggerFactory.getLogger(javaClass)
 
     fun compare(target: TargetConfig, scope: ScopeRange?): TargetResult = try {
-        val bound = boundScope(target, scope)
-        val staging = oracle.staging.rowCount(target.staging, bound)
-        val production = oracle.production.rowCount(target.production, bound)
-        val agrees = staging == production
-        val verdict = if (agrees) Verdict.PASS else Verdict.FAIL
-        TargetResult(
-            name = target.name,
-            verdict = verdict,
-            notes = if (verdict == Verdict.FAIL && target.fullRefresh) listOf(DRIFT_NOTE) else emptyList(),
-            aggregateCheck = AggregateCheckResult(
-                listOf(CheckResult("row_count", null, staging.toBigDecimal(), production.toBigDecimal(), agrees)),
-            ),
-        )
+        compareOracle(target, scope)
     } catch (e: Exception) {
         log.warn("Target {} could not be compared", target.name, e)
         TargetResult(target.name, Verdict.ERROR, reason = e.message)
     }
 
-    private fun boundScope(target: TargetConfig, scope: ScopeRange?): BoundScope? {
+    private fun compareOracle(target: TargetConfig, scope: ScopeRange?): TargetResult {
+        val stagingColumns = requireNotNull(oracle.staging.columns(target.staging)) { "Target is missing in Staging" }
+        val productionColumns = requireNotNull(oracle.production.columns(target.production)) { "Target is missing in Production" }
+        val ignored = target.ignoredColumns.toSet()
+        val compared = stagingColumns.filter { it.name !in ignored }
+        val schemaDifferences = schemaDifferences(compared, productionColumns.filter { it.name !in ignored })
+        if (schemaDifferences.isNotEmpty()) {
+            return finish(target, Verdict.FAIL, schemaDifferences = schemaDifferences)
+        }
+
+        val bound = boundScope(target, scope, stagingColumns)
+        val spec = AggregateSpec(
+            sumColumns = compared.filter { it.category == ColumnCategory.NUMERIC },
+            nullColumns = compared,
+            fingerprintColumns = compared,
+        )
+        val stagingValues = oracle.staging.aggregate(target.staging, spec, bound)
+        val productionValues = oracle.production.aggregate(target.production, spec, bound)
+        val checks = AggregateComparison.compare(spec, stagingValues, productionValues)
+        val verdict = if (checks.all { it.agrees }) Verdict.PASS else Verdict.FAIL
+        return finish(target, verdict, AggregateCheckResult(checks))
+    }
+
+    private fun finish(
+        target: TargetConfig,
+        verdict: Verdict,
+        aggregate: AggregateCheckResult? = null,
+        schemaDifferences: List<String> = emptyList(),
+    ) = TargetResult(
+        name = target.name,
+        verdict = verdict,
+        notes = if (verdict == Verdict.FAIL && target.fullRefresh) listOf(DRIFT_NOTE) else emptyList(),
+        schemaDifferences = schemaDifferences,
+        aggregateCheck = aggregate,
+    )
+
+    private fun schemaDifferences(staging: List<ColumnMeta>, production: List<ColumnMeta>): List<String> {
+        val s = staging.associateBy { it.name }
+        val p = production.associateBy { it.name }
+        return buildList {
+            (s.keys - p.keys).sorted().forEach { add("Column $it exists in Staging only") }
+            (p.keys - s.keys).sorted().forEach { add("Column $it exists in Production only") }
+            (s.keys intersect p.keys).sorted().forEach {
+                if (s.getValue(it).dataType != p.getValue(it).dataType) {
+                    add("Column $it has type ${s.getValue(it).dataType} in Staging and ${p.getValue(it).dataType} in Production")
+                }
+            }
+        }
+    }
+
+    private fun boundScope(target: TargetConfig, scope: ScopeRange?, columns: List<ColumnMeta>): BoundScope? {
         if (target.fullRefresh) return null
-        val column = requireNotNull(oracle.staging.columns(target.staging)) { "Staging table missing" }
-            .first { it.name == target.scopeColumn }
-        return ScopeValues.bind(column, requireNotNull(scope))
+        return ScopeValues.bind(columns.first { it.name == target.scopeColumn }, requireNotNull(scope))
     }
 }

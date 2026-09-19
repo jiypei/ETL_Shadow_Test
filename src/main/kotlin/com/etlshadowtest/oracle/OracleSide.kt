@@ -2,11 +2,14 @@ package com.etlshadowtest.oracle
 
 import com.etlshadowtest.api.Location
 import com.etlshadowtest.config.OracleProperties
+import com.etlshadowtest.target.AggregateSpec
+import com.etlshadowtest.target.AggregateValues
 import com.etlshadowtest.target.BoundScope
 import com.etlshadowtest.target.ColumnCategory
 import com.etlshadowtest.target.ColumnMeta
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
+import java.sql.PreparedStatement
 
 /** Oracle access for one Environment. */
 class OracleSide(val environment: String, props: OracleProperties) : AutoCloseable {
@@ -35,17 +38,36 @@ class OracleSide(val environment: String, props: OracleProperties) : AutoCloseab
         }
     }.ifEmpty { null }
 
-    fun rowCount(location: Location, scope: BoundScope?): Long = pool.connection.use { c ->
-        val where = if (scope == null) "" else " WHERE ${quote(scope.column)} >= ? AND ${quote(scope.column)} < ?"
-        c.prepareStatement("SELECT COUNT(*) FROM ${qualified(location)}$where").use { ps ->
-            if (scope != null) {
-                ps.setObject(1, scope.from)
-                ps.setObject(2, scope.to)
-            }
+    /** The Aggregate Check, computed inside Oracle in one pass over the Comparison Scope. */
+    fun aggregate(location: Location, spec: AggregateSpec, scope: BoundScope?): AggregateValues = pool.connection.use { c ->
+        val selects = buildList {
+            add("COUNT(*)")
+            spec.sumColumns.forEach { add("SUM(${quote(it.name)})") }
+            spec.nullColumns.forEach { add("COUNT(${quote(it.name)})") }
+            if (spec.fingerprintColumns.isNotEmpty()) add(OracleSql.checksum(spec.fingerprintColumns))
+        }
+        val sql = "SELECT ${selects.joinToString(", ")} FROM ${qualified(location)}${scopeClause(scope)}"
+        c.prepareStatement(sql).use { ps ->
+            bindScope(ps, scope)
             ps.executeQuery().use { rs ->
                 rs.next()
-                rs.getBigDecimal(1).longValueExact()
+                var i = 1
+                val rowCount = rs.getBigDecimal(i++).longValueExact()
+                val sums = spec.sumColumns.associate { it.name to rs.getBigDecimal(i++) }
+                val counts = spec.nullColumns.associate { it.name to rs.getBigDecimal(i++).longValueExact() }
+                val checksum = if (spec.fingerprintColumns.isNotEmpty()) rs.getBigDecimal(i) else null
+                AggregateValues(rowCount, sums, counts, checksum)
             }
+        }
+    }
+
+    private fun scopeClause(scope: BoundScope?) =
+        if (scope == null) "" else " WHERE ${quote(scope.column)} >= ? AND ${quote(scope.column)} < ?"
+
+    private fun bindScope(ps: PreparedStatement, scope: BoundScope?) {
+        if (scope != null) {
+            ps.setObject(1, scope.from)
+            ps.setObject(2, scope.to)
         }
     }
 

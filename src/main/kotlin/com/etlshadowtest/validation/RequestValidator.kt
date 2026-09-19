@@ -1,8 +1,10 @@
 package com.etlshadowtest.validation
 
 import com.etlshadowtest.api.ApiException
+import com.etlshadowtest.api.TargetConfig
 import com.etlshadowtest.api.TriggerRequest
 import com.etlshadowtest.oracle.OracleSides
+import com.etlshadowtest.target.ColumnCategory
 import com.etlshadowtest.target.ScopeValues
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
@@ -26,10 +28,11 @@ class RequestValidator(private val oracle: OracleSides) {
                 }
             }
         }
+        for (target in request.config.targets) problems += unsupportedTypes(target)
         if (problems.isNotEmpty()) throw ApiException(HttpStatus.BAD_REQUEST, "Invalid request: ${problems.first()}", problems)
     }
 
-    private fun scopeProblem(name: String, target: com.etlshadowtest.api.TargetConfig, scopeColumn: String, request: TriggerRequest): String? {
+    private fun scopeProblem(name: String, target: TargetConfig, scopeColumn: String, request: TriggerRequest): String? {
         val columns = oracle.staging.columns(target.staging) ?: oracle.production.columns(target.production) ?: return null
         val column = columns.firstOrNull { it.name == scopeColumn }
             ?: return "Target '$name': scope column '$scopeColumn' does not exist"
@@ -37,6 +40,14 @@ class RequestValidator(private val oracle: OracleSides) {
             ScopeValues.bind(column, request.scope!!); null
         } catch (e: IllegalArgumentException) {
             "Target '$name': ${e.message}"
+        }
+    }
+
+    /** A column whose type cannot be compared exactly must be declared ignored, never silently skipped. */
+    private fun unsupportedTypes(target: TargetConfig): List<String> {
+        val columns = oracle.staging.columns(target.staging) ?: oracle.production.columns(target.production) ?: return emptyList()
+        return columns.filter { it.category == ColumnCategory.OTHER && it.name !in target.ignoredColumns }.map {
+            "Target '${target.name}': column '${it.name}' has type ${it.dataType}, which cannot be compared; add it to ignoredColumns"
         }
     }
 }
