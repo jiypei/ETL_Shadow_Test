@@ -27,6 +27,7 @@ data class TargetResult(
     val name: String,
     val verdict: Verdict,
     val reason: String? = null,
+    val notes: List<String> = emptyList(),
     val aggregateCheck: AggregateCheckResult? = null,
 )
 
