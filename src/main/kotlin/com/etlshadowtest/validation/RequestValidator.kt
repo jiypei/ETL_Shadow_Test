@@ -88,7 +88,13 @@ class RequestValidator(private val sides: TargetSides) {
             return listOf("Target '${target.name}' does not exist in Staging or Production: check its location for a typo")
         }
         val columns = (staging as? Lookup.Found)?.columns ?: (production as? Lookup.Found)?.columns ?: return emptyList()
+        // A name is only accepted if the real metadata of at least one readable Environment has it; a column present on
+        // one side only is a schema difference that the Test Run reports, not a typo.
+        val known = listOfNotNull(staging as? Lookup.Found, production as? Lookup.Found).flatMap { f -> f.columns.map { it.name } }.toSet()
         return buildList {
+            for (name in target.keyColumns) if (name !in known) add("Target '${target.name}': key column '$name' does not exist")
+            for (name in target.ignoredColumns) if (name !in known) add("Target '${target.name}': ignored column '$name' does not exist")
+            for (name in target.keyColumns.intersect(target.ignoredColumns.toSet())) add("Target '${target.name}': key column '$name' cannot be ignored")
             addAll(unsupportedTypes(target, columns))
             addAll(toleranceProblems(target, columns))
             val scopeColumn = target.scopeColumn
