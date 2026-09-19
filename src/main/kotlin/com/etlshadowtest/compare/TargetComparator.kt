@@ -41,10 +41,12 @@ class TargetComparator(private val oracle: OracleSides, private val rowDiff: Row
         }
 
         val bound = boundScope(target, scope, stagingColumns)
+        val keys = target.keyColumns.map { name -> stagingColumns.first { it.name == name } }
         val spec = AggregateSpec(
             sumColumns = compared.filter { it.category == ColumnCategory.NUMERIC },
             nullColumns = compared,
             fingerprintColumns = compared,
+            keyColumns = keys,
         )
         val stagingValues = oracle.staging.aggregate(target.staging, spec, bound)
         val productionValues = oracle.production.aggregate(target.production, spec, bound)
@@ -52,7 +54,6 @@ class TargetComparator(private val oracle: OracleSides, private val rowDiff: Row
         if (checks.all { it.agrees }) {
             return finish(target, Verdict.PASS, AggregateCheckResult(checks), rowDiff = RowDiffResult("SKIPPED", "Aggregate Check agreed"))
         }
-        val keys = target.keyColumns.map { name -> stagingColumns.first { it.name == name } }
         val diff = rowDiff.run(ctx, target, oracle.staging, oracle.production, compared, keys, compared, bound)
         return finish(target, Verdict.FAIL, AggregateCheckResult(checks), rowDiff = diff)
     }

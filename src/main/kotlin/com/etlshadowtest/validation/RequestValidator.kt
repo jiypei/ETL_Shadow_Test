@@ -15,6 +15,13 @@ class RequestValidator(private val oracle: OracleSides) {
     fun validate(request: TriggerRequest) {
         val problems = mutableListOf<String>()
         for (target in request.config.targets) {
+            if (!target.newTarget) {
+                if (target.keyless && target.keyColumns.isNotEmpty()) {
+                    problems += "Target '${target.name}' is declared keyless and must not name keyColumns"
+                } else if (!target.keyless && target.keyColumns.isEmpty()) {
+                    problems += "Target '${target.name}' must name keyColumns or be declared keyless"
+                }
+            }
             val scopeColumn = target.scopeColumn
             if (target.fullRefresh && scopeColumn != null) {
                 problems += "Target '${target.name}' is Full-Refresh and must not name a scope column"

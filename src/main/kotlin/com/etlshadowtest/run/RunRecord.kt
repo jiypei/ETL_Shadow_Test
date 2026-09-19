@@ -54,4 +54,24 @@ data class RowDiffResult(
     val sampleLimitPerType: Int? = null,
     val sampled: Int? = null,
     val mismatchesFile: String? = null,
+    val duplicateKeys: DuplicateKeysResult? = null,
+    /** Keyless Targets only: differences in how often identical rows occur. */
+    val countDifferences: CountDifferencesResult? = null,
+    val note: String? = null,
 )
+
+data class DuplicateKeysResult(val staging: DuplicateKeysSide, val production: DuplicateKeysSide)
+
+data class DuplicateKeysSide(val keys: Long, val sample: List<DuplicateKey>)
+
+data class DuplicateKey(val key: Map<String, Any?>, val occurrences: Long)
+
+data class CountDifferencesResult(
+    val differingRowContents: Long,
+    val rowsExtraInStaging: Long,
+    val rowsExtraInProduction: Long,
+    val sample: List<CountDifference>,
+)
+
+/** A Row Fingerprint (a stand-in for one distinct row content) and how often it occurs on each side. */
+data class CountDifference(val fingerprint: String, val staging: Long, val production: Long)

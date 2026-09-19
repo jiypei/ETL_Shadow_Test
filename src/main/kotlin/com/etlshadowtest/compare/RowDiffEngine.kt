@@ -3,11 +3,17 @@ package com.etlshadowtest.compare
 import com.etlshadowtest.api.TargetConfig
 import com.etlshadowtest.config.ShadowProperties
 import com.etlshadowtest.results.ResultsStore
+import com.etlshadowtest.run.CountDifference
+import com.etlshadowtest.run.CountDifferencesResult
+import com.etlshadowtest.run.DuplicateKey
+import com.etlshadowtest.run.DuplicateKeysResult
+import com.etlshadowtest.run.DuplicateKeysSide
 import com.etlshadowtest.run.RowDiffResult
 import com.etlshadowtest.run.RunContext
 import com.etlshadowtest.duckdb.Workspace
 import com.etlshadowtest.target.BoundScope
 import com.etlshadowtest.target.ColumnMeta
+import com.etlshadowtest.target.KeyValues
 import com.etlshadowtest.target.TargetSide
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.springframework.stereotype.Component
@@ -37,45 +43,112 @@ class RowDiffEngine(private val props: ShadowProperties, private val results: Re
         try {
             staging.loadKeyFingerprints(target.staging, keys, fingerprint, scope, ws, "stg")
             production.loadKeyFingerprints(target.production, keys, fingerprint, scope, ws, "prod")
-            val keyCols = keys.indices.map { "k$it" }
-            val join = keyCols.joinToString(" AND ") { "s.$it IS NOT DISTINCT FROM p.$it" }
-            ws.execute(
-                "CREATE TABLE diff AS SELECT ${keyCols.joinToString(", ") { "coalesce(s.$it, p.$it) AS $it" }}, " +
-                    "CASE WHEN p.fp IS NULL THEN 'ONLY_IN_STAGING' WHEN s.fp IS NULL THEN 'ONLY_IN_PRODUCTION' ELSE 'DIFFERENT' END AS type " +
-                    "FROM stg s FULL OUTER JOIN prod p ON $join WHERE s.fp IS DISTINCT FROM p.fp",
-            )
-            val counts = counts(ws)
-            val limit = props.mismatchSampleSize
-            val sampleKeys = Type.entries.associateWith { sampleKeys(ws, it, keyCols, limit) }
+            return if (keys.isEmpty()) diffKeyless(ws) else diffKeyed(ctx, ws, target, staging, production, columns, keys, scope)
+        } finally {
+            for (t in listOf("stg", "prod", "stg_u", "prod_u", "dup_s", "dup_p", "dup_keys", "diff", "cdiff", "sample")) {
+                runCatching { ws.execute("DROP TABLE IF EXISTS $t") }
+            }
+        }
+    }
 
-            val stagingRows = staging.fetchRows(target.staging, columns, keys, (sampleKeys.getValue(Type.DIFFERENT) + sampleKeys.getValue(Type.ONLY_IN_STAGING)), scope)
-            val productionRows = production.fetchRows(target.production, columns, keys, (sampleKeys.getValue(Type.DIFFERENT) + sampleKeys.getValue(Type.ONLY_IN_PRODUCTION)), scope)
-            val samples = Type.entries.flatMap { type ->
-                sampleKeys.getValue(type).map { tuple ->
-                    val s = if (type != Type.ONLY_IN_PRODUCTION) stagingRows[tuple] else null
-                    val p = if (type != Type.ONLY_IN_STAGING) productionRows[tuple] else null
-                    val keyRow = s ?: p
-                    Sample(
-                        type,
-                        keys.associate { it.name to keyRow?.get(it.name) },
-                        s, p,
-                        if (s != null && p != null) columns.filter { !equal(s[it.name], p[it.name]) }.map { it.name } else emptyList(),
-                    )
+    private fun diffKeyed(
+        ctx: RunContext,
+        ws: Workspace,
+        target: TargetConfig,
+        staging: TargetSide,
+        production: TargetSide,
+        columns: List<ColumnMeta>,
+        keys: List<ColumnMeta>,
+        scope: BoundScope?,
+    ): RowDiffResult {
+        val keyCols = keys.indices.map { "k$it" }
+        val keyList = keyCols.joinToString(", ")
+        val limit = props.mismatchSampleSize
+
+        // A key that is not unique cannot be matched, so duplicated keys are reported on their own and left out of the diff.
+        ws.execute("CREATE TABLE dup_s AS SELECT $keyList, count(*) AS occurrences FROM stg GROUP BY $keyList HAVING count(*) > 1")
+        ws.execute("CREATE TABLE dup_p AS SELECT $keyList, count(*) AS occurrences FROM prod GROUP BY $keyList HAVING count(*) > 1")
+        ws.execute("CREATE TABLE dup_keys AS SELECT $keyList FROM dup_s UNION SELECT $keyList FROM dup_p")
+        val antiJoin = keyCols.joinToString(" AND ") { "x.$it IS NOT DISTINCT FROM d.$it" }
+        ws.execute("CREATE TABLE stg_u AS SELECT x.* FROM stg x ANTI JOIN dup_keys d ON $antiJoin")
+        ws.execute("CREATE TABLE prod_u AS SELECT x.* FROM prod x ANTI JOIN dup_keys d ON $antiJoin")
+
+        val join = keyCols.joinToString(" AND ") { "s.$it IS NOT DISTINCT FROM p.$it" }
+        ws.execute(
+            "CREATE TABLE diff AS SELECT ${keyCols.joinToString(", ") { "coalesce(s.$it, p.$it) AS $it" }}, " +
+                "CASE WHEN p.fp IS NULL THEN 'ONLY_IN_STAGING' WHEN s.fp IS NULL THEN 'ONLY_IN_PRODUCTION' ELSE 'DIFFERENT' END AS type " +
+                "FROM stg_u s FULL OUTER JOIN prod_u p ON $join WHERE s.fp IS DISTINCT FROM p.fp",
+        )
+        val counts = counts(ws)
+        val sampleKeys = Type.entries.associateWith { sampleKeys(ws, it, keyCols, limit) }
+
+        val stagingRows = staging.fetchRows(target.staging, columns, keys, sampleKeys.getValue(Type.DIFFERENT) + sampleKeys.getValue(Type.ONLY_IN_STAGING), scope)
+        val productionRows = production.fetchRows(target.production, columns, keys, sampleKeys.getValue(Type.DIFFERENT) + sampleKeys.getValue(Type.ONLY_IN_PRODUCTION), scope)
+        val samples = Type.entries.flatMap { type ->
+            sampleKeys.getValue(type).map { tuple ->
+                val s = if (type != Type.ONLY_IN_PRODUCTION) stagingRows[tuple] else null
+                val p = if (type != Type.ONLY_IN_STAGING) productionRows[tuple] else null
+                val keyRow = s ?: p
+                Sample(
+                    type,
+                    keys.associate { it.name to keyRow?.get(it.name) },
+                    s, p,
+                    if (s != null && p != null) columns.filter { !equal(s[it.name], p[it.name]) }.map { it.name } else emptyList(),
+                )
+            }
+        }
+        val file = if (samples.isNotEmpty()) writeSamples(ctx, ws, target.name, samples) else null
+        return RowDiffResult(
+            status = "RAN",
+            onlyInStaging = counts.getValue(Type.ONLY_IN_STAGING),
+            onlyInProduction = counts.getValue(Type.ONLY_IN_PRODUCTION),
+            differentRows = counts.getValue(Type.DIFFERENT),
+            sampleLimitPerType = limit,
+            sampled = samples.size,
+            mismatchesFile = file,
+            duplicateKeys = DuplicateKeysResult(duplicates(ws, "dup_s", keys, keyCols, limit), duplicates(ws, "dup_p", keys, keyCols, limit)),
+        )
+    }
+
+    private fun duplicates(ws: Workspace, table: String, keys: List<ColumnMeta>, keyCols: List<String>, limit: Int): DuplicateKeysSide {
+        val total = ws.connection.createStatement().use { s -> s.executeQuery("SELECT count(*) FROM $table").use { it.next(); it.getLong(1) } }
+        val sample = ws.connection.prepareStatement("SELECT ${keyCols.joinToString(", ")}, occurrences FROM $table ORDER BY occurrences DESC, ${keyCols.joinToString(", ")} LIMIT ?").use { ps ->
+            ps.setInt(1, limit)
+            ps.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(DuplicateKey(keys.indices.associate { keys[it].name to KeyValues.display(keys[it].category, rs.getString(it + 1)) }, rs.getLong(keys.size + 1)))
+                    }
                 }
             }
-            val file = if (counts.values.sum() > 0) writeSamples(ctx, ws, target.name, samples) else null
-            return RowDiffResult(
-                status = "RAN",
-                onlyInStaging = counts.getValue(Type.ONLY_IN_STAGING),
-                onlyInProduction = counts.getValue(Type.ONLY_IN_PRODUCTION),
-                differentRows = counts.getValue(Type.DIFFERENT),
-                sampleLimitPerType = limit,
-                sampled = samples.size,
-                mismatchesFile = file,
-            )
-        } finally {
-            for (t in listOf("stg", "prod", "diff", "sample")) runCatching { ws.execute("DROP TABLE IF EXISTS $t") }
         }
+        return DuplicateKeysSide(total, sample)
+    }
+
+    /** Without a key rows cannot be matched, so only how often each distinct row content occurs on each side is compared. */
+    private fun diffKeyless(ws: Workspace): RowDiffResult {
+        val limit = props.mismatchSampleSize
+        ws.execute(
+            "CREATE TABLE cdiff AS SELECT coalesce(s.fp, p.fp) AS fp, coalesce(s.n, 0) AS sn, coalesce(p.n, 0) AS pn " +
+                "FROM (SELECT fp, count(*) AS n FROM stg GROUP BY fp) s FULL OUTER JOIN (SELECT fp, count(*) AS n FROM prod GROUP BY fp) p ON s.fp = p.fp " +
+                "WHERE coalesce(s.n, 0) <> coalesce(p.n, 0)",
+        )
+        val summary = ws.connection.createStatement().use { st ->
+            st.executeQuery("SELECT count(*), coalesce(sum(greatest(sn - pn, 0)), 0), coalesce(sum(greatest(pn - sn, 0)), 0) FROM cdiff").use { rs ->
+                rs.next(); Triple(rs.getLong(1), rs.getLong(2), rs.getLong(3))
+            }
+        }
+        val sample = ws.connection.prepareStatement("SELECT fp, sn, pn FROM cdiff ORDER BY abs(sn - pn) DESC, fp LIMIT ?").use { ps ->
+            ps.setInt(1, limit)
+            ps.executeQuery().use { rs -> buildList { while (rs.next()) add(CountDifference(rs.getString(1), rs.getLong(2), rs.getLong(3))) } }
+        }
+        return RowDiffResult(
+            status = "RAN",
+            sampleLimitPerType = limit,
+            sampled = sample.size,
+            countDifferences = CountDifferencesResult(summary.first, summary.second, summary.third, sample),
+            note = "Keyless Target: there is no key to match rows on, so the report can show that rows differ but cannot identify which ones",
+        )
     }
 
     private fun counts(ws: Workspace): Map<Type, Long> {

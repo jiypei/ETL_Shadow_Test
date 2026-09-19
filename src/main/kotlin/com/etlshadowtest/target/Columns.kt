@@ -36,6 +36,11 @@ object ScopeValues {
 }
 
 object KeyValues {
+    /** A key's canonical text as it appears in reports: numbers as numbers, everything else as text. */
+    fun display(category: ColumnCategory, text: String?): Any? =
+        if (text != null && category == ColumnCategory.NUMERIC) BigDecimal(text) else text
+
+
     /** Turns a key's canonical text (as produced for the Row Fingerprint) back into a value that can be bound as a parameter. */
     fun parse(category: ColumnCategory, text: String?): Any? = when {
         text == null -> null

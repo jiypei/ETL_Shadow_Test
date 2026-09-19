@@ -10,6 +10,8 @@ data class AggregateSpec(
     val nullColumns: List<ColumnMeta>,
     /** Columns that make up the Row Fingerprint and the checksum (non-ignored, non-tolerance). */
     val fingerprintColumns: List<ColumnMeta>,
+    /** Key columns; when present, the Aggregate Check also counts rows whose key is not unique. */
+    val keyColumns: List<ColumnMeta> = emptyList(),
 )
 
 data class AggregateValues(
@@ -18,4 +20,6 @@ data class AggregateValues(
     val nonNullCounts: Map<String, Long>,
     /** Order-independent checksum over the Row Fingerprints; null when there are no rows or no fingerprint columns. */
     val checksum: BigDecimal?,
+    /** Rows minus distinct keys: zero when the key identifies every row. Null when the Target is keyless. */
+    val duplicateKeyRows: Long? = null,
 )

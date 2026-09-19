@@ -18,6 +18,12 @@ object AggregateComparison {
             add(check("null_count", column.name, s.toBigDecimal(), p.toBigDecimal()))
         }
         if (spec.fingerprintColumns.isNotEmpty()) add(check("checksum", null, staging.checksum, production.checksum))
+        if (spec.keyColumns.isNotEmpty()) {
+            val s = staging.duplicateKeyRows!!.toBigDecimal()
+            val p = production.duplicateKeyRows!!.toBigDecimal()
+            // A key must identify every row on both sides, so this agrees only when neither side has duplicates.
+            add(CheckResult("duplicate_key_rows", null, s, p, agrees = s.signum() == 0 && p.signum() == 0))
+        }
     }
 
     private fun check(name: String, column: String?, staging: BigDecimal?, production: BigDecimal?) =

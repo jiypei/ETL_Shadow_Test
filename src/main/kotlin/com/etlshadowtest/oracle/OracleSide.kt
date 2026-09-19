@@ -51,6 +51,7 @@ class OracleSide(override val environment: String, props: OracleProperties) : Ta
             spec.sumColumns.forEach { add("SUM(${quote(it.name)})") }
             spec.nullColumns.forEach { add("COUNT(${quote(it.name)})") }
             if (spec.fingerprintColumns.isNotEmpty()) add(OracleSql.checksum(spec.fingerprintColumns))
+            if (spec.keyColumns.isNotEmpty()) add("COUNT(DISTINCT ${OracleSql.rowFingerprint(spec.keyColumns)})")
         }
         val sql = "SELECT ${selects.joinToString(", ")} FROM ${qualified(location)}${scopeClause(scope)}"
         c.prepareStatement(sql).use { ps ->
@@ -61,8 +62,9 @@ class OracleSide(override val environment: String, props: OracleProperties) : Ta
                 val rowCount = rs.getBigDecimal(i++).longValueExact()
                 val sums = spec.sumColumns.associate { it.name to rs.getBigDecimal(i++) }
                 val counts = spec.nullColumns.associate { it.name to rs.getBigDecimal(i++).longValueExact() }
-                val checksum = if (spec.fingerprintColumns.isNotEmpty()) rs.getBigDecimal(i) else null
-                AggregateValues(rowCount, sums, counts, checksum)
+                val checksum = if (spec.fingerprintColumns.isNotEmpty()) rs.getBigDecimal(i++) else null
+                val duplicates = if (spec.keyColumns.isNotEmpty()) rowCount - rs.getBigDecimal(i).longValueExact() else null
+                AggregateValues(rowCount, sums, counts, checksum, duplicates)
             }
         }
     }
@@ -75,8 +77,8 @@ class OracleSide(override val environment: String, props: OracleProperties) : Ta
         workspace: Workspace,
         table: String,
     ) {
-        val keyColumns = keys.indices.joinToString(", ") { "k$it VARCHAR" }
-        workspace.execute("CREATE TABLE $table ($keyColumns, fp VARCHAR)")
+        val definitions = keys.indices.map { "k$it VARCHAR" } + "fp VARCHAR"
+        workspace.execute("CREATE TABLE $table (${definitions.joinToString(", ")})")
         val selects = keys.map { OracleSql.canonical(it) } + OracleSql.rowFingerprint(fingerprint)
         val sql = "SELECT ${selects.joinToString(", ")} FROM ${qualified(location)}${scopeClause(scope)}"
         val duck = workspace.connection as DuckDBConnection
