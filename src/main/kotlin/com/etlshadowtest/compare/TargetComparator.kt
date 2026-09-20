@@ -10,7 +10,6 @@ import com.etlshadowtest.run.ToleranceReport
 import com.etlshadowtest.run.Verdict
 import com.etlshadowtest.target.AggregateSpec
 import com.etlshadowtest.target.BoundScope
-import com.etlshadowtest.target.ColumnCategory
 import com.etlshadowtest.target.ColumnMeta
 import com.etlshadowtest.target.ScopeValues
 import com.etlshadowtest.target.TargetSides
@@ -58,7 +57,7 @@ class TargetComparator(private val sides: TargetSides, private val rowDiff: RowD
         val toleranceColumns = compared.filter { it.name in target.tolerances }
         val fingerprint = compared.filter { it.name !in target.tolerances }
         val spec = AggregateSpec(
-            sumColumns = compared.filter { it.category == ColumnCategory.NUMERIC },
+            sumColumns = compared.filter { it.category.numeric },
             nullColumns = compared,
             fingerprintColumns = fingerprint,
             keyColumns = keys,

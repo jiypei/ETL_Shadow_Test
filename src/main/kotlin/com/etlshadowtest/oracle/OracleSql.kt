@@ -13,6 +13,20 @@ object OracleSql {
     private const val TIMESTAMP_FORMAT = "'YYYY-MM-DD\"T\"HH24:MI:SS.FF9'"
     private const val NULL_PIECE = "'N00000000000000000000000000000000'"
 
+    private val IEEE_TYPES = setOf("BINARY_FLOAT", "BINARY_DOUBLE")
+
+    /** Maps an Oracle column type to what it means for comparison. Done once, when the Target's metadata is read. */
+    fun column(name: String, dataType: String) = ColumnMeta(name, dataType, categoryOf(dataType), dataType in IEEE_TYPES)
+
+    private fun categoryOf(dataType: String): ColumnCategory = when {
+        dataType == "NUMBER" || dataType == "FLOAT" || dataType == "BINARY_FLOAT" || dataType == "BINARY_DOUBLE" -> ColumnCategory.NUMERIC
+        dataType in setOf("VARCHAR2", "NVARCHAR2", "CHAR", "NCHAR") -> ColumnCategory.TEXT
+        dataType == "DATE" -> ColumnCategory.DATE
+        dataType.startsWith("TIMESTAMP") && "TIME ZONE" in dataType -> ColumnCategory.TIMESTAMP_TZ
+        dataType.startsWith("TIMESTAMP") -> ColumnCategory.TIMESTAMP
+        else -> ColumnCategory.OTHER
+    }
+
     fun canonical(column: ColumnMeta): String {
         val q = OracleSide.quote(column.name)
         return when (column.category) {

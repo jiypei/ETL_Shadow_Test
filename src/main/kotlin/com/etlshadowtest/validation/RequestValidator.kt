@@ -6,7 +6,6 @@ import com.etlshadowtest.api.TargetConfig
 import com.etlshadowtest.api.TargetType
 import com.etlshadowtest.api.TriggerRequest
 import com.etlshadowtest.parquet.DuckSql
-import com.etlshadowtest.target.ColumnCategory
 import com.etlshadowtest.target.ColumnMeta
 import com.etlshadowtest.target.ScopeValues
 import com.etlshadowtest.target.TargetSide
@@ -17,8 +16,6 @@ import org.springframework.stereotype.Component
 
 /** Pipeline and Target names end up in object keys and paths, so they are restricted to a safe alphabet. */
 val SAFE_NAME = Regex("[A-Za-z0-9._-]{1,100}")
-
-private val KEY_CATEGORIES = setOf(ColumnCategory.NUMERIC, ColumnCategory.TEXT, ColumnCategory.DATE, ColumnCategory.TIMESTAMP)
 
 /** Rejects a request up front, before any Test Run exists, with an error that names the problem. */
 @Component
@@ -125,7 +122,7 @@ class RequestValidator(private val sides: TargetSides, private val webhooks: Web
 
     /** A column whose type cannot be compared exactly must be declared ignored, never silently skipped. */
     private fun unsupportedTypes(target: TargetConfig, columns: List<ColumnMeta>): List<String> =
-        columns.filter { it.category == ColumnCategory.OTHER && it.name !in target.ignoredColumns }.map {
+        columns.filter { !it.category.comparable && it.name !in target.ignoredColumns }.map {
             "Target '${target.name}': column '${it.name}' has type ${it.dataType}, which cannot be compared; add it to ignoredColumns"
         }
 
@@ -133,7 +130,7 @@ class RequestValidator(private val sides: TargetSides, private val webhooks: Web
     private fun keyTypeProblems(target: TargetConfig, columns: List<ColumnMeta>): List<String> =
         target.keyColumns.mapNotNull { name ->
             val column = columns.firstOrNull { it.name == name } ?: return@mapNotNull null
-            if (column.category in KEY_CATEGORIES) null
+            if (column.category.usableAsKey) null
             else "Target '${target.name}': key column '$name' has type ${column.dataType}, which cannot be used as a key"
         }
 
@@ -143,7 +140,7 @@ class RequestValidator(private val sides: TargetSides, private val webhooks: Web
             when {
                 tolerance.signum() < 0 -> "Target '${target.name}': tolerance for column '$name' must not be negative"
                 column == null -> "Target '${target.name}': tolerance column '$name' does not exist"
-                column.category != ColumnCategory.NUMERIC -> "Target '${target.name}': tolerance column '$name' is not numeric (${column.dataType})"
+                !column.category.numeric -> "Target '${target.name}': tolerance column '$name' is not numeric (${column.dataType})"
                 name in target.keyColumns -> "Target '${target.name}': key column '$name' cannot have a tolerance"
                 name in target.ignoredColumns -> "Target '${target.name}': ignored column '$name' cannot have a tolerance"
                 else -> null

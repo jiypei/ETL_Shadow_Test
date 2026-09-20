@@ -7,7 +7,25 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeParseException
 
-enum class ColumnCategory { NUMERIC, TEXT, DATE, TIMESTAMP, TIMESTAMP_TZ, OTHER }
+/**
+ * What a column's native type means for comparison, whichever dialect it came from. Each adapter maps its native types to
+ * a category once, when it reads the Target's metadata; everything derived from a category lives here.
+ */
+enum class ColumnCategory(
+    val numeric: Boolean = false,
+    val temporal: Boolean = false,
+    /** False for types that cannot be compared exactly (LOBs, RAW, booleans, intervals): they must be ignored. */
+    val comparable: Boolean = true,
+    /** Keys are matched by their text and bound back as values, which works for these types only. */
+    val usableAsKey: Boolean = true,
+) {
+    NUMERIC(numeric = true),
+    TEXT,
+    DATE(temporal = true),
+    TIMESTAMP(temporal = true),
+    TIMESTAMP_TZ(temporal = true, usableAsKey = false),
+    OTHER(comparable = false, usableAsKey = false),
+}
 
 /** A column as the Target's real metadata reports it. */
 data class ColumnMeta(
@@ -35,33 +53,37 @@ object ScopeValues {
         return BoundScope(column.name, from, to)
     }
 
-    private fun convert(column: ColumnMeta, text: String, bound: String): Any = try {
-        when (column.category) {
-            ColumnCategory.NUMERIC -> BigDecimal(text)
-            ColumnCategory.TEXT -> text
-            ColumnCategory.DATE, ColumnCategory.TIMESTAMP, ColumnCategory.TIMESTAMP_TZ ->
-                Timestamp.valueOf(if ('T' in text) LocalDateTime.parse(text) else LocalDate.parse(text).atStartOfDay())
-            ColumnCategory.OTHER -> throw IllegalArgumentException("scope column '${column.name}' has type ${column.dataType}, which cannot be used as a scope column")
+    private fun convert(column: ColumnMeta, text: String, bound: String): Any {
+        require(column.category.comparable) { "scope column '${column.name}' has type ${column.dataType}, which cannot be used as a scope column" }
+        return try {
+            CategoryValues.bind(column.category, text)
+        } catch (e: NumberFormatException) {
+            throw IllegalArgumentException("scope '$bound' value '$text' is not a valid ${column.dataType} for scope column '${column.name}'")
+        } catch (e: DateTimeParseException) {
+            throw IllegalArgumentException("scope '$bound' value '$text' is not a valid ${column.dataType} for scope column '${column.name}'")
         }
-    } catch (e: NumberFormatException) {
-        throw IllegalArgumentException("scope '$bound' value '$text' is not a valid ${column.dataType} for scope column '${column.name}'")
-    } catch (e: DateTimeParseException) {
-        throw IllegalArgumentException("scope '$bound' value '$text' is not a valid ${column.dataType} for scope column '${column.name}'")
+    }
+}
+
+/** The one place that turns text (a scope bound, or a key's canonical text) into a value that can be bound as a parameter. */
+object CategoryValues {
+    fun bind(category: ColumnCategory, text: String): Any = when {
+        category.numeric -> BigDecimal(text)
+        category.temporal -> Timestamp.valueOf(if ('T' in text) LocalDateTime.parse(text) else LocalDate.parse(text).atStartOfDay())
+        category.comparable -> text
+        else -> throw IllegalArgumentException("A $category column has no value that can be bound")
     }
 }
 
 object KeyValues {
     /** A key's canonical text as it appears in reports: numbers as numbers, everything else as text. */
     fun display(category: ColumnCategory, text: String?): Any? =
-        if (text != null && category == ColumnCategory.NUMERIC) BigDecimal(text) else text
-
+        if (text != null && category.numeric) BigDecimal(text) else text
 
     /** Turns a key's canonical text (as produced for the Row Fingerprint) back into a value that can be bound as a parameter. */
-    fun parse(category: ColumnCategory, text: String?): Any? = when {
-        text == null -> null
-        category == ColumnCategory.NUMERIC -> BigDecimal(text)
-        category == ColumnCategory.TEXT -> text
-        category == ColumnCategory.DATE || category == ColumnCategory.TIMESTAMP -> Timestamp.valueOf(LocalDateTime.parse(text))
-        else -> throw IllegalArgumentException("A $category column cannot be used as a key")
+    fun parse(category: ColumnCategory, text: String?): Any? {
+        if (text == null) return null
+        require(category.usableAsKey) { "A $category column cannot be used as a key" }
+        return CategoryValues.bind(category, text)
     }
 }

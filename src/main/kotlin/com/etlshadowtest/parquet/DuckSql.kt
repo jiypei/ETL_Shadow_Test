@@ -47,7 +47,10 @@ object DuckSql {
 
     fun checksum(columns: List<ColumnMeta>) = "CAST(sum(CAST(hash(${rowFingerprint(columns)}) AS HUGEINT)) AS DECIMAL(38,0))"
 
-    fun categoryOf(type: String): ColumnCategory = when {
+    /** Maps a DuckDB column type to what it means for comparison. Done once, when the Target's schema is read. */
+    fun column(name: String, type: String) = ColumnMeta(name, type, categoryOf(type), type == "FLOAT" || type == "DOUBLE")
+
+    private fun categoryOf(type: String): ColumnCategory = when {
         type in NUMERIC_TYPES || type.startsWith("DECIMAL") -> ColumnCategory.NUMERIC
         type == "VARCHAR" -> ColumnCategory.TEXT
         type == "DATE" -> ColumnCategory.DATE

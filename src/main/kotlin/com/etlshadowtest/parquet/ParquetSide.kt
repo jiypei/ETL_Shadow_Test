@@ -7,7 +7,6 @@ import com.etlshadowtest.run.RunContext
 import com.etlshadowtest.target.AggregateSpec
 import com.etlshadowtest.target.AggregateValues
 import com.etlshadowtest.target.BoundScope
-import com.etlshadowtest.target.ColumnCategory
 import com.etlshadowtest.target.ColumnMeta
 import com.etlshadowtest.target.KeyValues
 import com.etlshadowtest.target.TargetSide
@@ -50,7 +49,7 @@ class ParquetSide(override val environment: String, private val minio: MinioProp
         metadataConnection().use { c ->
             c.createStatement().use { s ->
                 s.executeQuery("DESCRIBE SELECT * FROM ${dataset(location)}").use { rs ->
-                    buildList { while (rs.next()) add(ColumnMeta(rs.getString("column_name"), rs.getString("column_type"), DuckSql.categoryOf(rs.getString("column_type")), rs.getString("column_type") in setOf("FLOAT", "DOUBLE"))) }
+                    buildList { while (rs.next()) add(DuckSql.column(rs.getString("column_name"), rs.getString("column_type"))) }
                 }
             }
         }
@@ -147,10 +146,10 @@ class ParquetSide(override val environment: String, private val minio: MinioProp
 
     /** Temporal values are reported in their canonical text form; everything else natively. */
     private fun valueExpression(column: ColumnMeta) =
-        if (column.category == ColumnCategory.NUMERIC || column.category == ColumnCategory.TEXT) DuckSql.quote(column.name) else DuckSql.canonical(column)
+        if (column.category.temporal) DuckSql.canonical(column) else DuckSql.quote(column.name)
 
     private fun readValue(rs: java.sql.ResultSet, index: Int, column: ColumnMeta): Any? =
-        if (column.category == ColumnCategory.NUMERIC) rs.getBigDecimal(index) else rs.getString(index)
+        if (column.category.numeric) rs.getBigDecimal(index) else rs.getString(index)
 
     override fun close() {
         if (metadataStarted) metadataDb.close()

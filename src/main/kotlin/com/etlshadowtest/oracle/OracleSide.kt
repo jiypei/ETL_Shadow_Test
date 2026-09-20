@@ -71,7 +71,7 @@ class OracleSide(override val environment: String, private val props: OracleProp
             ps.setString(1, location.schema)
             ps.setString(2, location.table)
             ps.executeQuery().use { rs ->
-                buildList { while (rs.next()) add(ColumnMeta(rs.getString(1), rs.getString(2), categoryOf(rs.getString(2)), rs.getString(2) in IEEE_TYPES)) }
+                buildList { while (rs.next()) add(OracleSql.column(rs.getString(1), rs.getString(2))) }
             }
         }
     }.ifEmpty { null }
@@ -190,7 +190,6 @@ class OracleSide(override val environment: String, private val props: OracleProp
 
     companion object {
         private const val FETCH_SIZE = 10_000
-        private val IEEE_TYPES = setOf("BINARY_FLOAT", "BINARY_DOUBLE")
         private const val ORA_USER_REQUESTED_CANCEL = 1013
         private const val FETCH_KEYS_PER_QUERY = 100
 
@@ -200,15 +199,6 @@ class OracleSide(override val environment: String, private val props: OracleProp
         }
 
         fun qualified(location: Location) = "${quote(location.schema!!)}.${quote(location.table!!)}"
-
-        fun categoryOf(dataType: String): ColumnCategory = when {
-            dataType == "NUMBER" || dataType == "FLOAT" || dataType == "BINARY_FLOAT" || dataType == "BINARY_DOUBLE" -> ColumnCategory.NUMERIC
-            dataType in setOf("VARCHAR2", "NVARCHAR2", "CHAR", "NCHAR") -> ColumnCategory.TEXT
-            dataType == "DATE" -> ColumnCategory.DATE
-            dataType.startsWith("TIMESTAMP") && "TIME ZONE" in dataType -> ColumnCategory.TIMESTAMP_TZ
-            dataType.startsWith("TIMESTAMP") -> ColumnCategory.TIMESTAMP
-            else -> ColumnCategory.OTHER
-        }
     }
 }
 
