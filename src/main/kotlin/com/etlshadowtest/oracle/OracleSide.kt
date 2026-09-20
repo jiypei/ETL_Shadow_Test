@@ -3,6 +3,7 @@ package com.etlshadowtest.oracle
 import com.etlshadowtest.api.Location
 import com.etlshadowtest.config.OracleProperties
 import com.etlshadowtest.run.RunContext
+import com.etlshadowtest.target.AggregateQuery
 import com.etlshadowtest.target.AggregateSpec
 import com.etlshadowtest.target.AggregateValues
 import com.etlshadowtest.target.BoundScope
@@ -10,6 +11,8 @@ import com.etlshadowtest.target.ColumnCategory
 import com.etlshadowtest.target.ColumnMeta
 import com.etlshadowtest.target.KeyValues
 import com.etlshadowtest.target.TargetSide
+import com.etlshadowtest.target.bindTo
+import com.etlshadowtest.target.whereClause
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.duckdb.DuckDBConnection
@@ -78,30 +81,10 @@ class OracleSide(override val environment: String, private val props: OracleProp
 
     /** The Aggregate Check, computed inside Oracle in one pass over the Comparison Scope. */
     override fun aggregate(location: Location, spec: AggregateSpec, scope: BoundScope?, ctx: RunContext): AggregateValues = read { c ->
-        val selects = buildList {
-            add("COUNT(*)")
-            spec.sumColumns.forEach { add("SUM(${quote(it.name)})") }
-            spec.nullColumns.forEach { add("COUNT(${quote(it.name)})") }
-            spec.toleranceColumns.forEach { add("MIN(${quote(it.name)})"); add("MAX(${quote(it.name)})") }
-            if (spec.fingerprintColumns.isNotEmpty()) add(OracleSql.checksum(spec.fingerprintColumns))
-            if (spec.keyColumns.isNotEmpty()) add("COUNT(DISTINCT ${OracleSql.rowFingerprint(spec.keyColumns)})")
-        }
-        val sql = "SELECT ${selects.joinToString(", ")} FROM ${qualified(location)}${scopeClause(scope)}"
-        c.select(sql).use { ps ->
-            bindScope(ps, scope)
-            ps.executeQuery().use { rs ->
-                rs.next()
-                var i = 1
-                val rowCount = rs.getBigDecimal(i++).longValueExact()
-                val sums = spec.sumColumns.associate { it.name to rs.getBigDecimal(i++) }
-                val counts = spec.nullColumns.associate { it.name to rs.getBigDecimal(i++).longValueExact() }
-                val mins = LinkedHashMap<String, java.math.BigDecimal?>()
-                val maxs = LinkedHashMap<String, java.math.BigDecimal?>()
-                for (column in spec.toleranceColumns) { mins[column.name] = rs.getBigDecimal(i++); maxs[column.name] = rs.getBigDecimal(i++) }
-                val checksum = if (spec.fingerprintColumns.isNotEmpty()) rs.getBigDecimal(i++) else null
-                val duplicates = if (spec.keyColumns.isNotEmpty()) rowCount - rs.getBigDecimal(i).longValueExact() else null
-                AggregateValues(rowCount, sums, counts, mins, maxs, checksum, duplicates)
-            }
+        val query = AggregateQuery(spec, OracleSql)
+        c.select(query.sql(qualified(location), scope)).use { ps ->
+            scope.bindTo(ps, 1)
+            ps.executeQuery().use(query::read)
         }
     }
 
@@ -117,13 +100,13 @@ class OracleSide(override val environment: String, private val props: OracleProp
         val definitions = keys.indices.map { "k$it VARCHAR" } + "fp VARCHAR"
         workspace.execute("CREATE TABLE $table (${definitions.joinToString(", ")})")
         val selects = keys.map { OracleSql.canonical(it) } + OracleSql.rowFingerprint(fingerprint)
-        val sql = "SELECT ${selects.joinToString(", ")} FROM ${qualified(location)}${scopeClause(scope)}"
+        val sql = "SELECT ${selects.joinToString(", ")} FROM ${qualified(location)}${scope.whereClause(OracleSql)}"
         val duck = workspace.connection as DuckDBConnection
         duck.createAppender(DuckDBConnection.DEFAULT_SCHEMA, table).use { appender ->
             read { c ->
                 c.select(sql).use { ps ->
                     ps.fetchSize = FETCH_SIZE
-                    bindScope(ps, scope)
+                    scope.bindTo(ps, 1)
                     ps.executeQuery().use { rs ->
                         while (rs.next()) {
                             appender.beginRow()
@@ -174,16 +157,6 @@ class OracleSide(override val environment: String, private val props: OracleProp
         ColumnCategory.DATE, ColumnCategory.TIMESTAMP -> rs.getTimestamp(index)?.toLocalDateTime()?.toString()
         ColumnCategory.TIMESTAMP_TZ -> rs.getObject(index, OffsetDateTime::class.java)?.toString()
         ColumnCategory.OTHER -> throw IllegalArgumentException("Column '${column.name}' has type ${column.dataType}, which cannot be compared")
-    }
-
-    private fun scopeClause(scope: BoundScope?) =
-        if (scope == null) "" else " WHERE ${quote(scope.column)} >= ? AND ${quote(scope.column)} < ?"
-
-    private fun bindScope(ps: PreparedStatement, scope: BoundScope?) {
-        if (scope != null) {
-            ps.setObject(1, scope.from)
-            ps.setObject(2, scope.to)
-        }
     }
 
     override fun close() = pool.close()

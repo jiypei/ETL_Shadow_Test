@@ -4,16 +4,17 @@ import com.etlshadowtest.api.Location
 import com.etlshadowtest.config.MinioProperties
 import com.etlshadowtest.duckdb.DuckS3
 import com.etlshadowtest.run.RunContext
+import com.etlshadowtest.target.AggregateQuery
 import com.etlshadowtest.target.AggregateSpec
 import com.etlshadowtest.target.AggregateValues
 import com.etlshadowtest.target.BoundScope
 import com.etlshadowtest.target.ColumnMeta
 import com.etlshadowtest.target.KeyValues
 import com.etlshadowtest.target.TargetSide
-import java.math.BigDecimal
+import com.etlshadowtest.target.bindTo
+import com.etlshadowtest.target.whereClause
 import java.sql.Connection
 import java.sql.DriverManager
-import java.sql.PreparedStatement
 import java.sql.SQLException
 import java.sql.Timestamp
 
@@ -57,45 +58,13 @@ class ParquetSide(override val environment: String, private val minio: MinioProp
         if (e.message?.contains("No files found") == true) null else throw e
     }
 
-    private fun scopeClause(scope: BoundScope?) =
-        if (scope == null) "" else " WHERE ${DuckSql.quote(scope.column)} >= ? AND ${DuckSql.quote(scope.column)} < ?"
-
-    private fun bind(ps: PreparedStatement, first: Int, scope: BoundScope?): Int {
-        var i = first
-        if (scope != null) {
-            ps.setObject(i++, scope.from.forDuckDb())
-            ps.setObject(i++, scope.to.forDuckDb())
-        }
-        return i
-    }
-
     private fun Any?.forDuckDb(): Any? = if (this is Timestamp) toLocalDateTime() else this
 
     override fun aggregate(location: Location, spec: AggregateSpec, scope: BoundScope?, ctx: RunContext): AggregateValues {
-        val selects = buildList {
-            add("count(*)")
-            spec.sumColumns.forEach { add(if (it.dataType == "DOUBLE" || it.dataType == "FLOAT") "fsum(${DuckSql.quote(it.name)})" else "sum(${DuckSql.quote(it.name)})") }
-            spec.nullColumns.forEach { add("count(${DuckSql.quote(it.name)})") }
-            spec.toleranceColumns.forEach { add("min(${DuckSql.quote(it.name)})"); add("max(${DuckSql.quote(it.name)})") }
-            if (spec.fingerprintColumns.isNotEmpty()) add(DuckSql.checksum(spec.fingerprintColumns))
-            if (spec.keyColumns.isNotEmpty()) add("count(DISTINCT ${DuckSql.rowFingerprint(spec.keyColumns)})")
-        }
-        val sql = "SELECT ${selects.joinToString(", ")} FROM ${dataset(location)}${scopeClause(scope)}"
-        connection(ctx).prepareStatement(sql).use { ps ->
-            bind(ps, 1, scope)
-            ps.executeQuery().use { rs ->
-                rs.next()
-                var i = 1
-                val rowCount = rs.getLong(i++)
-                val sums = spec.sumColumns.associate { it.name to rs.getBigDecimal(i++) }
-                val counts = spec.nullColumns.associate { it.name to rs.getLong(i++) }
-                val mins = LinkedHashMap<String, BigDecimal?>()
-                val maxs = LinkedHashMap<String, BigDecimal?>()
-                for (column in spec.toleranceColumns) { mins[column.name] = rs.getBigDecimal(i++); maxs[column.name] = rs.getBigDecimal(i++) }
-                val checksum = if (spec.fingerprintColumns.isNotEmpty()) rs.getBigDecimal(i++) else null
-                val duplicates = if (spec.keyColumns.isNotEmpty()) rowCount - rs.getLong(i) else null
-                return AggregateValues(rowCount, sums, counts, mins, maxs, checksum, duplicates)
-            }
+        val query = AggregateQuery(spec, DuckSql)
+        connection(ctx).prepareStatement(query.sql(dataset(location), scope)).use { ps ->
+            scope.bindTo(ps, 1) { it.forDuckDb() }
+            return ps.executeQuery().use(query::read)
         }
     }
 
@@ -108,9 +77,9 @@ class ParquetSide(override val environment: String, private val minio: MinioProp
         table: String,
     ) {
         val selects = keys.mapIndexed { i, k -> "${DuckSql.canonical(k)} AS k$i" } + "${DuckSql.rowFingerprint(fingerprint)} AS fp"
-        val sql = "CREATE TABLE $table AS SELECT ${selects.joinToString(", ")} FROM ${dataset(location)}${scopeClause(scope)}"
+        val sql = "CREATE TABLE $table AS SELECT ${selects.joinToString(", ")} FROM ${dataset(location)}${scope.whereClause(DuckSql)}"
         connection(ctx).prepareStatement(sql).use { ps ->
-            bind(ps, 1, scope)
+            scope.bindTo(ps, 1) { it.forDuckDb() }
             ps.execute()
         }
     }
@@ -132,7 +101,7 @@ class ParquetSide(override val environment: String, private val minio: MinioProp
             connection(ctx).prepareStatement(sql).use { ps ->
                 var i = 1
                 for (tuple in batch) tuple.forEachIndexed { k, text -> ps.setObject(i++, KeyValues.parse(keys[k].category, text).forDuckDb()) }
-                bind(ps, i, scope)
+                scope.bindTo(ps, i) { it.forDuckDb() }
                 ps.executeQuery().use { rs ->
                     while (rs.next()) {
                         val key = keys.indices.map { rs.getString(it + 1) }

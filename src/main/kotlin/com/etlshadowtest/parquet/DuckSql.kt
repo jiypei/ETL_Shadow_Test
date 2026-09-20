@@ -3,18 +3,19 @@ package com.etlshadowtest.parquet
 import com.etlshadowtest.duckdb.Workspace
 import com.etlshadowtest.target.ColumnCategory
 import com.etlshadowtest.target.ColumnMeta
+import com.etlshadowtest.target.SqlDialect
 
 /**
  * SQL text for DuckDB over Parquet, built from validated column metadata only.
  * The normalization defines what "equal" means for Parquet Targets, mirroring the Oracle rules:
  * exact decimals, NULL equals NULL and nothing else, strings untrimmed, dates and timestamps compared as timestamps.
  */
-object DuckSql {
+object DuckSql : SqlDialect {
     private const val TIMESTAMP_FORMAT = "'%Y-%m-%dT%H:%M:%S.%n'"
     private const val NULL_PIECE = "'N00000000000000000000000000000000'"
     private val PATH = Regex("[A-Za-z0-9._=/-]+")
 
-    fun quote(identifier: String): String {
+    override fun quote(identifier: String): String {
         require(identifier.isNotEmpty() && '\u0000' !in identifier) { "Invalid identifier: $identifier" }
         return "\"" + identifier.replace("\"", "\"\"") + "\""
     }
@@ -27,7 +28,10 @@ object DuckSql {
         return "read_parquet(${Workspace.literal("s3://$bucket/${path.trimEnd('/')}/**/*.parquet")})"
     }
 
-    fun canonical(column: ColumnMeta): String {
+    /** Compensated summation for floating-point columns; still only informational there. */
+    override fun sum(column: ColumnMeta) = if (column.floatingPoint) "fsum(${quote(column.name)})" else "sum(${quote(column.name)})"
+
+    override fun canonical(column: ColumnMeta): String {
         val q = quote(column.name)
         return when (column.category) {
             ColumnCategory.NUMERIC -> "CAST($q AS VARCHAR)"
@@ -42,10 +46,10 @@ object DuckSql {
         "CASE WHEN ${quote(column.name)} IS NULL THEN $NULL_PIECE ELSE 'V' || md5(${canonical(column)}) END"
 
     /** SQL expression giving the Row Fingerprint (32 hex characters) of the given columns. */
-    fun rowFingerprint(columns: List<ColumnMeta>): String =
+    override fun rowFingerprint(columns: List<ColumnMeta>): String =
         "md5(${columns.joinToString(" || ") { piece(it) }.ifEmpty { "'-'" }})"
 
-    fun checksum(columns: List<ColumnMeta>) = "CAST(sum(CAST(hash(${rowFingerprint(columns)}) AS HUGEINT)) AS DECIMAL(38,0))"
+    override fun checksum(columns: List<ColumnMeta>) = "CAST(sum(CAST(hash(${rowFingerprint(columns)}) AS HUGEINT)) AS DECIMAL(38,0))"
 
     /** Maps a DuckDB column type to what it means for comparison. Done once, when the Target's schema is read. */
     fun column(name: String, type: String) = ColumnMeta(name, type, categoryOf(type), type == "FLOAT" || type == "DOUBLE")

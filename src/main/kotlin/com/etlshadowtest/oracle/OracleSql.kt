@@ -2,13 +2,14 @@ package com.etlshadowtest.oracle
 
 import com.etlshadowtest.target.ColumnCategory
 import com.etlshadowtest.target.ColumnMeta
+import com.etlshadowtest.target.SqlDialect
 
 /**
  * SQL text built from validated column metadata only. Identifiers are always quoted; values are always bound.
  * The normalization here defines what "equal" means for the Aggregate Check checksum and the Row Fingerprint,
  * so both use the same expressions (ADR 0001).
  */
-object OracleSql {
+object OracleSql : SqlDialect {
     private const val NLS = "'NLS_NUMERIC_CHARACTERS=''.,'''"
     private const val TIMESTAMP_FORMAT = "'YYYY-MM-DD\"T\"HH24:MI:SS.FF9'"
     private const val NULL_PIECE = "'N00000000000000000000000000000000'"
@@ -27,7 +28,11 @@ object OracleSql {
         else -> ColumnCategory.OTHER
     }
 
-    fun canonical(column: ColumnMeta): String {
+    override fun quote(identifier: String) = OracleSide.quote(identifier)
+
+    override fun sum(column: ColumnMeta) = "SUM(${quote(column.name)})"
+
+    override fun canonical(column: ColumnMeta): String {
         val q = OracleSide.quote(column.name)
         return when (column.category) {
             ColumnCategory.NUMERIC -> "TO_CHAR($q, 'TM9', $NLS)"
@@ -44,12 +49,12 @@ object OracleSql {
             "ELSE 'V' || RAWTOHEX(STANDARD_HASH(${canonical(column)}, 'MD5')) END"
 
     /** SQL expression giving the Row Fingerprint (64 hex characters) of the given columns. */
-    fun rowFingerprint(columns: List<ColumnMeta>): String {
+    override fun rowFingerprint(columns: List<ColumnMeta>): String {
         val chunks = columns.map(::piece).chunked(100).map { "RAWTOHEX(STANDARD_HASH(${it.joinToString(" || ")}, 'MD5'))" }
         return "RAWTOHEX(STANDARD_HASH(${chunks.joinToString(" || ").ifEmpty { "'-'" }}, 'SHA256'))"
     }
 
     /** Order-independent checksum: the sum of the first 60 bits of each Row Fingerprint. */
-    fun checksum(columns: List<ColumnMeta>): String =
+    override fun checksum(columns: List<ColumnMeta>): String =
         "SUM(TO_NUMBER(SUBSTR(${rowFingerprint(columns)}, 1, 15), 'XXXXXXXXXXXXXXX'))"
 }
