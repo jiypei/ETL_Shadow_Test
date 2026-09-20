@@ -42,6 +42,10 @@ class AggregateQuery(private val spec: AggregateSpec, private val dialect: SqlDi
 fun BoundScope?.whereClause(dialect: SqlDialect): String =
     if (this == null) "" else " WHERE ${dialect.quote(column)} >= ? AND ${dialect.quote(column)} < ?"
 
+/** ` AND col >= ? AND col < ?`, for a query that already has a WHERE clause. */
+fun BoundScope?.andClause(dialect: SqlDialect): String =
+    if (this == null) "" else " AND ${dialect.quote(column)} >= ? AND ${dialect.quote(column)} < ?"
+
 /** Binds the scope's two values from parameter [first] and returns the next free index. [convert] adapts them to a driver. */
 fun BoundScope?.bindTo(ps: PreparedStatement, first: Int, convert: (Any) -> Any? = { it }): Int {
     var i = first

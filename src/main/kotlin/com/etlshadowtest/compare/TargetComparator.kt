@@ -64,13 +64,16 @@ class TargetComparator(private val sides: TargetSides, private val rowDiff: RowD
             toleranceColumns = toleranceColumns,
             tolerances = target.tolerances,
         )
-        val stagingValues = staging.aggregate(target.staging, spec, bound, ctx)
-        val productionValues = production.aggregate(target.production, spec, bound, ctx)
+        // Bound to this Test Run once; the Test Run's DuckDB is only created if a query needs it.
+        val stagingReader = staging.readerFor(ctx)
+        val productionReader = production.readerFor(ctx)
+        val stagingValues = stagingReader.aggregate(target.staging, spec, bound)
+        val productionValues = productionReader.aggregate(target.production, spec, bound)
         val checks = AggregateComparison.compare(spec, stagingValues, productionValues)
         if (AggregateComparison.agree(checks)) {
             return finish(target, Verdict.PASS, AggregateCheckResult(checks), rowDiff = RowDiffResult("SKIPPED", "Aggregate Check agreed"))
         }
-        val diff = rowDiff.run(ctx, target, staging, production, compared, keys, fingerprint, bound, target.tolerances)
+        val diff = rowDiff.run(ctx, target, stagingReader, productionReader, compared, keys, fingerprint, bound, target.tolerances)
         return finish(target, Verdict.FAIL, AggregateCheckResult(checks), rowDiff = diff)
     }
 

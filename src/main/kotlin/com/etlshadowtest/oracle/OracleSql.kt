@@ -3,6 +3,8 @@ package com.etlshadowtest.oracle
 import com.etlshadowtest.target.ColumnCategory
 import com.etlshadowtest.target.ColumnMeta
 import com.etlshadowtest.target.SqlDialect
+import java.sql.ResultSet
+import java.time.OffsetDateTime
 
 /**
  * SQL text built from validated column metadata only. Identifiers are always quoted; values are always bound.
@@ -29,6 +31,18 @@ object OracleSql : SqlDialect {
     }
 
     override fun quote(identifier: String) = OracleSide.quote(identifier)
+
+    override fun valueExpression(column: ColumnMeta) = quote(column.name)
+
+    override fun bindable(value: Any?) = value
+
+    override fun readValue(rs: ResultSet, index: Int, column: ColumnMeta): Any? = when (column.category) {
+        ColumnCategory.NUMERIC -> rs.getBigDecimal(index)
+        ColumnCategory.TEXT -> rs.getString(index)
+        ColumnCategory.DATE, ColumnCategory.TIMESTAMP -> rs.getTimestamp(index)?.toLocalDateTime()?.toString()
+        ColumnCategory.TIMESTAMP_TZ -> rs.getObject(index, OffsetDateTime::class.java)?.toString()
+        ColumnCategory.OTHER -> throw IllegalArgumentException("Column '${column.name}' has type ${column.dataType}, which cannot be compared")
+    }
 
     override fun sum(column: ColumnMeta) = "SUM(${quote(column.name)})"
 

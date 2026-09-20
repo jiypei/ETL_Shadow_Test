@@ -5,18 +5,19 @@ import com.etlshadowtest.config.MinioProperties
 import com.etlshadowtest.duckdb.DuckS3
 import com.etlshadowtest.run.RunContext
 import com.etlshadowtest.target.AggregateQuery
+import com.etlshadowtest.target.KeyFingerprintTable
+import com.etlshadowtest.target.RowFetch
+import com.etlshadowtest.target.TargetReader
 import com.etlshadowtest.target.AggregateSpec
 import com.etlshadowtest.target.AggregateValues
 import com.etlshadowtest.target.BoundScope
 import com.etlshadowtest.target.ColumnMeta
-import com.etlshadowtest.target.KeyValues
 import com.etlshadowtest.target.TargetSide
 import com.etlshadowtest.target.bindTo
 import com.etlshadowtest.target.whereClause
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.SQLException
-import java.sql.Timestamp
 
 /** Parquet Targets in one Environment's MinIO bucket. DuckDB reads the data in place; nothing is copied into the service first. */
 class ParquetSide(override val environment: String, private val minio: MinioProperties, private val extensionDirectory: String?) : TargetSide, AutoCloseable {
@@ -58,73 +59,34 @@ class ParquetSide(override val environment: String, private val minio: MinioProp
         if (e.message?.contains("No files found") == true) null else throw e
     }
 
-    private fun Any?.forDuckDb(): Any? = if (this is Timestamp) toLocalDateTime() else this
+    override fun readerFor(ctx: RunContext): TargetReader = object : TargetReader {
+        /** The Test Run's own DuckDB, created on first use so a Test Run that never needs it never makes it. */
+        private val connection by lazy { connection(ctx) }
 
-    override fun aggregate(location: Location, spec: AggregateSpec, scope: BoundScope?, ctx: RunContext): AggregateValues {
-        val query = AggregateQuery(spec, DuckSql)
-        connection(ctx).prepareStatement(query.sql(dataset(location), scope)).use { ps ->
-            scope.bindTo(ps, 1) { it.forDuckDb() }
-            return ps.executeQuery().use(query::read)
-        }
-    }
-
-    override fun loadKeyFingerprints(
-        location: Location,
-        keys: List<ColumnMeta>,
-        fingerprint: List<ColumnMeta>,
-        scope: BoundScope?,
-        ctx: RunContext,
-        table: String,
-    ) {
-        val selects = keys.mapIndexed { i, k -> "${DuckSql.canonical(k)} AS k$i" } + "${DuckSql.rowFingerprint(fingerprint)} AS fp"
-        val sql = "CREATE TABLE $table AS SELECT ${selects.joinToString(", ")} FROM ${dataset(location)}${scope.whereClause(DuckSql)}"
-        connection(ctx).prepareStatement(sql).use { ps ->
-            scope.bindTo(ps, 1) { it.forDuckDb() }
-            ps.execute()
-        }
-    }
-
-    override fun fetchRows(
-        location: Location,
-        columns: List<ColumnMeta>,
-        keys: List<ColumnMeta>,
-        keyTuples: List<List<String?>>,
-        scope: BoundScope?,
-        ctx: RunContext,
-    ): Map<List<String?>, Map<String, Any?>> {
-        val result = LinkedHashMap<List<String?>, Map<String, Any?>>()
-        for (batch in keyTuples.chunked(FETCH_KEYS_PER_QUERY)) {
-            val keyMatch = batch.joinToString(" OR ") { "(" + keys.joinToString(" AND ") { k -> "${DuckSql.quote(k.name)} = ?" } + ")" }
-            val selects = keys.map { DuckSql.canonical(it) } + columns.map { valueExpression(it) }
-            val sql = "SELECT ${selects.joinToString(", ")} FROM ${dataset(location)} WHERE ($keyMatch)" +
-                if (scope == null) "" else " AND ${DuckSql.quote(scope.column)} >= ? AND ${DuckSql.quote(scope.column)} < ?"
-            connection(ctx).prepareStatement(sql).use { ps ->
-                var i = 1
-                for (tuple in batch) tuple.forEachIndexed { k, text -> ps.setObject(i++, KeyValues.parse(keys[k].category, text).forDuckDb()) }
-                scope.bindTo(ps, i) { it.forDuckDb() }
-                ps.executeQuery().use { rs ->
-                    while (rs.next()) {
-                        val key = keys.indices.map { rs.getString(it + 1) }
-                        result[key] = columns.mapIndexed { n, col -> col.name to readValue(rs, keys.size + n + 1, col) }.toMap(LinkedHashMap())
-                    }
-                }
+        override fun aggregate(location: Location, spec: AggregateSpec, scope: BoundScope?): AggregateValues {
+            val query = AggregateQuery(spec, DuckSql)
+            connection.prepareStatement(query.sql(dataset(location), scope)).use { ps ->
+                scope.bindTo(ps, 1, DuckSql::bindable)
+                return ps.executeQuery().use(query::read)
             }
         }
-        return result
+
+        /** DuckDB reads the Parquet files in place from MinIO and writes the table itself. */
+        override fun loadKeyFingerprints(location: Location, into: KeyFingerprintTable, keys: List<ColumnMeta>, fingerprint: List<ColumnMeta>, scope: BoundScope?) {
+            val sql = "CREATE TABLE ${into.name} AS ${into.select(DuckSql, keys, fingerprint, dataset(location), scope)}"
+            connection.prepareStatement(sql).use { ps ->
+                scope.bindTo(ps, 1, DuckSql::bindable)
+                ps.execute()
+            }
+        }
+
+        override fun fetchRows(location: Location, columns: List<ColumnMeta>, keys: List<ColumnMeta>, keyTuples: List<List<String?>>, scope: BoundScope?) =
+            RowFetch(DuckSql).fetch(dataset(location), columns, keys, keyTuples, scope) { sql, bind, readResult ->
+                connection.prepareStatement(sql).use { ps -> bind(ps); ps.executeQuery().use(readResult) }
+            }
     }
-
-    /** Temporal values are reported in their canonical text form; everything else natively. */
-    private fun valueExpression(column: ColumnMeta) =
-        if (column.category.temporal) DuckSql.canonical(column) else DuckSql.quote(column.name)
-
-    private fun readValue(rs: java.sql.ResultSet, index: Int, column: ColumnMeta): Any? =
-        if (column.category.numeric) rs.getBigDecimal(index) else rs.getString(index)
 
     override fun close() {
         if (metadataStarted) metadataDb.close()
-    }
-
-    private companion object {
-        const val FETCH_KEYS_PER_QUERY = 100
     }
 }

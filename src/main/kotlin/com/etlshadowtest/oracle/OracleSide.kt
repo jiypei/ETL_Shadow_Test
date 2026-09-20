@@ -4,12 +4,13 @@ import com.etlshadowtest.api.Location
 import com.etlshadowtest.config.OracleProperties
 import com.etlshadowtest.run.RunContext
 import com.etlshadowtest.target.AggregateQuery
+import com.etlshadowtest.target.KeyFingerprintTable
+import com.etlshadowtest.target.RowFetch
+import com.etlshadowtest.target.TargetReader
 import com.etlshadowtest.target.AggregateSpec
 import com.etlshadowtest.target.AggregateValues
 import com.etlshadowtest.target.BoundScope
-import com.etlshadowtest.target.ColumnCategory
 import com.etlshadowtest.target.ColumnMeta
-import com.etlshadowtest.target.KeyValues
 import com.etlshadowtest.target.TargetSide
 import com.etlshadowtest.target.bindTo
 import com.etlshadowtest.target.whereClause
@@ -18,11 +19,9 @@ import com.zaxxer.hikari.HikariDataSource
 import org.duckdb.DuckDBConnection
 import java.sql.Connection
 import java.sql.PreparedStatement
-import java.sql.ResultSet
 import java.sql.SQLException
 import java.sql.SQLTimeoutException
 import java.util.concurrent.Semaphore
-import java.time.OffsetDateTime
 
 /** Oracle access for one Environment. */
 class OracleSide(override val environment: String, private val props: OracleProperties) : TargetSide, AutoCloseable {
@@ -79,84 +78,43 @@ class OracleSide(override val environment: String, private val props: OracleProp
         }
     }.ifEmpty { null }
 
-    /** The Aggregate Check, computed inside Oracle in one pass over the Comparison Scope. */
-    override fun aggregate(location: Location, spec: AggregateSpec, scope: BoundScope?, ctx: RunContext): AggregateValues = read { c ->
-        val query = AggregateQuery(spec, OracleSql)
-        c.select(query.sql(qualified(location), scope)).use { ps ->
-            scope.bindTo(ps, 1)
-            ps.executeQuery().use(query::read)
+    override fun readerFor(ctx: RunContext): TargetReader = object : TargetReader {
+        /** The Aggregate Check, computed inside Oracle in one pass over the Comparison Scope. */
+        override fun aggregate(location: Location, spec: AggregateSpec, scope: BoundScope?): AggregateValues = read { c ->
+            val query = AggregateQuery(spec, OracleSql)
+            c.select(query.sql(qualified(location), scope)).use { ps ->
+                scope.bindTo(ps, 1)
+                ps.executeQuery().use(query::read)
+            }
         }
-    }
 
-    override fun loadKeyFingerprints(
-        location: Location,
-        keys: List<ColumnMeta>,
-        fingerprint: List<ColumnMeta>,
-        scope: BoundScope?,
-        ctx: RunContext,
-        table: String,
-    ) {
-        val workspace = ctx.workspace()
-        val definitions = keys.indices.map { "k$it VARCHAR" } + "fp VARCHAR"
-        workspace.execute("CREATE TABLE $table (${definitions.joinToString(", ")})")
-        val selects = keys.map { OracleSql.canonical(it) } + OracleSql.rowFingerprint(fingerprint)
-        val sql = "SELECT ${selects.joinToString(", ")} FROM ${qualified(location)}${scope.whereClause(OracleSql)}"
-        val duck = workspace.connection as DuckDBConnection
-        duck.createAppender(DuckDBConnection.DEFAULT_SCHEMA, table).use { appender ->
-            read { c ->
-                c.select(sql).use { ps ->
-                    ps.fetchSize = FETCH_SIZE
-                    scope.bindTo(ps, 1)
-                    ps.executeQuery().use { rs ->
-                        while (rs.next()) {
-                            appender.beginRow()
-                            for (i in 1..selects.size) appender.append(rs.getString(i))
-                            appender.endRow()
+        /** Streams the rows out of Oracle into the Test Run's DuckDB, so the diff itself never runs in Oracle. */
+        override fun loadKeyFingerprints(location: Location, into: KeyFingerprintTable, keys: List<ColumnMeta>, fingerprint: List<ColumnMeta>, scope: BoundScope?) {
+            val workspace = ctx.workspace()
+            into.create(workspace)
+            val sql = into.select(OracleSql, keys, fingerprint, qualified(location), scope)
+            val columnCount = keys.size + 1
+            (workspace.connection as DuckDBConnection).createAppender(DuckDBConnection.DEFAULT_SCHEMA, into.name).use { appender ->
+                read { c ->
+                    c.select(sql).use { ps ->
+                        ps.fetchSize = FETCH_SIZE
+                        scope.bindTo(ps, 1)
+                        ps.executeQuery().use { rs ->
+                            while (rs.next()) {
+                                appender.beginRow()
+                                for (i in 1..columnCount) appender.append(rs.getString(i))
+                                appender.endRow()
+                            }
                         }
                     }
                 }
             }
         }
-    }
 
-    override fun fetchRows(
-        location: Location,
-        columns: List<ColumnMeta>,
-        keys: List<ColumnMeta>,
-        keyTuples: List<List<String?>>,
-        scope: BoundScope?,
-        ctx: RunContext,
-    ): Map<List<String?>, Map<String, Any?>> {
-        val result = LinkedHashMap<List<String?>, Map<String, Any?>>()
-        for (batch in keyTuples.chunked(FETCH_KEYS_PER_QUERY)) {
-            val keyMatch = batch.joinToString(" OR ") { "(" + keys.joinToString(" AND ") { k -> "${quote(k.name)} = ?" } + ")" }
-            val selects = keys.map { OracleSql.canonical(it) } + columns.map { quote(it.name) }
-            val sql = "SELECT ${selects.joinToString(", ")} FROM ${qualified(location)} WHERE ($keyMatch)" +
-                if (scope == null) "" else " AND ${quote(scope.column)} >= ? AND ${quote(scope.column)} < ?"
-            read { c ->
-                c.select(sql).use { ps ->
-                    var i = 1
-                    for (tuple in batch) tuple.forEachIndexed { k, text -> ps.setObject(i++, KeyValues.parse(keys[k].category, text)) }
-                    if (scope != null) { ps.setObject(i++, scope.from); ps.setObject(i, scope.to) }
-                    ps.executeQuery().use { rs ->
-                        while (rs.next()) {
-                            val key = keys.indices.map { rs.getString(it + 1) }
-                            val values = columns.mapIndexed { n, col -> col.name to readValue(rs, keys.size + n + 1, col) }.toMap(LinkedHashMap())
-                            result[key] = values
-                        }
-                    }
-                }
+        override fun fetchRows(location: Location, columns: List<ColumnMeta>, keys: List<ColumnMeta>, keyTuples: List<List<String?>>, scope: BoundScope?) =
+            RowFetch(OracleSql).fetch(qualified(location), columns, keys, keyTuples, scope) { sql, bind, readResult ->
+                read { c -> c.select(sql).use { ps -> bind(ps); ps.executeQuery().use(readResult) } }
             }
-        }
-        return result
-    }
-
-    private fun readValue(rs: ResultSet, index: Int, column: ColumnMeta): Any? = when (column.category) {
-        ColumnCategory.NUMERIC -> rs.getBigDecimal(index)
-        ColumnCategory.TEXT -> rs.getString(index)
-        ColumnCategory.DATE, ColumnCategory.TIMESTAMP -> rs.getTimestamp(index)?.toLocalDateTime()?.toString()
-        ColumnCategory.TIMESTAMP_TZ -> rs.getObject(index, OffsetDateTime::class.java)?.toString()
-        ColumnCategory.OTHER -> throw IllegalArgumentException("Column '${column.name}' has type ${column.dataType}, which cannot be compared")
     }
 
     override fun close() = pool.close()
@@ -164,7 +122,6 @@ class OracleSide(override val environment: String, private val props: OracleProp
     companion object {
         private const val FETCH_SIZE = 10_000
         private const val ORA_USER_REQUESTED_CANCEL = 1013
-        private const val FETCH_KEYS_PER_QUERY = 100
 
         fun quote(identifier: String): String {
             require(identifier.isNotEmpty() && '"' !in identifier && '\u0000' !in identifier) { "Invalid identifier: $identifier" }

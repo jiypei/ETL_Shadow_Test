@@ -20,7 +20,7 @@ Read these before designing or implementing anything:
 
 ## Layout
 
-`api` (controller, request/error types), `auth` (bearer tokens), `validation` (request checks against real metadata), `run` (Test Run service, record, heartbeat, sweep), `compare` (per-Target comparison, Aggregate Check, Row Diff), `target`/`oracle`/`parquet` (`TargetSide` implementations and SQL builders), `duckdb` (per-run workspace), `results` (MinIO run records, history), `webhook`.
+`api` (controller, request/error types), `auth` (bearer tokens), `validation` (request checks against real metadata), `run` (Test Run service, record, heartbeat, sweep), `compare` (per-Target comparison, Aggregate Check, Row Diff), `target` (what is shared between databases: `AggregateQuery`, `RowFetch`, `KeyFingerprintTable`, column categories, and the `SqlDialect` and `TargetSide`/`TargetReader` seams), `oracle`/`parquet` (the two adapters: a dialect and how each runs queries), `duckdb` (per-run workspace), `results` (MinIO run records, history), `webhook`.
 
 ## What this is
 

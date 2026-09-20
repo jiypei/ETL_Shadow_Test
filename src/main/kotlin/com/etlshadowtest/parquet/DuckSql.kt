@@ -4,6 +4,8 @@ import com.etlshadowtest.duckdb.Workspace
 import com.etlshadowtest.target.ColumnCategory
 import com.etlshadowtest.target.ColumnMeta
 import com.etlshadowtest.target.SqlDialect
+import java.sql.ResultSet
+import java.sql.Timestamp
 
 /**
  * SQL text for DuckDB over Parquet, built from validated column metadata only.
@@ -27,6 +29,15 @@ object DuckSql : SqlDialect {
         require(isValidPath(path)) { "Invalid Parquet path: $path" }
         return "read_parquet(${Workspace.literal("s3://$bucket/${path.trimEnd('/')}/**/*.parquet")})"
     }
+
+    /** Temporal values are reported in their canonical text form; everything else natively. */
+    override fun valueExpression(column: ColumnMeta) = if (column.category.temporal) canonical(column) else quote(column.name)
+
+    override fun readValue(rs: ResultSet, index: Int, column: ColumnMeta): Any? =
+        if (column.category.numeric) rs.getBigDecimal(index) else rs.getString(index)
+
+    /** DuckDB's driver takes a LocalDateTime where the scope holds a Timestamp. */
+    override fun bindable(value: Any?): Any? = if (value is Timestamp) value.toLocalDateTime() else value
 
     /** Compensated summation for floating-point columns; still only informational there. */
     override fun sum(column: ColumnMeta) = if (column.floatingPoint) "fsum(${quote(column.name)})" else "sum(${quote(column.name)})"

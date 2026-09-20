@@ -13,8 +13,9 @@ import com.etlshadowtest.run.RunContext
 import com.etlshadowtest.duckdb.Workspace
 import com.etlshadowtest.target.BoundScope
 import com.etlshadowtest.target.ColumnMeta
+import com.etlshadowtest.target.KeyFingerprintTable
 import com.etlshadowtest.target.KeyValues
-import com.etlshadowtest.target.TargetSide
+import com.etlshadowtest.target.TargetReader
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.springframework.stereotype.Component
 import java.math.BigDecimal
@@ -32,8 +33,8 @@ class RowDiffEngine(private val props: ShadowProperties, private val results: Re
     fun run(
         ctx: RunContext,
         target: TargetConfig,
-        staging: TargetSide,
-        production: TargetSide,
+        staging: TargetReader,
+        production: TargetReader,
         columns: List<ColumnMeta>,
         keys: List<ColumnMeta>,
         fingerprint: List<ColumnMeta>,
@@ -41,51 +42,74 @@ class RowDiffEngine(private val props: ShadowProperties, private val results: Re
         tolerances: Map<String, BigDecimal> = emptyMap(),
     ): RowDiffResult {
         val ws = ctx.workspace()
+        val scratch = Scratch(ws)
         try {
-            staging.loadKeyFingerprints(target.staging, keys, fingerprint, scope, ctx, "stg")
-            production.loadKeyFingerprints(target.production, keys, fingerprint, scope, ctx, "prod")
-            return if (keys.isEmpty()) diffKeyless(ws) else diffKeyed(ctx, ws, target, staging, production, columns, keys, scope, tolerances)
+            val stg = KeyFingerprintTable("stg", keys.size).also { scratch.adopt(it.name) }
+            val prod = KeyFingerprintTable("prod", keys.size).also { scratch.adopt(it.name) }
+            staging.loadKeyFingerprints(target.staging, stg, keys, fingerprint, scope)
+            production.loadKeyFingerprints(target.production, prod, keys, fingerprint, scope)
+            return if (keys.isEmpty()) diffKeyless(ws, scratch, stg, prod)
+            else diffKeyed(ctx, ws, scratch, stg, prod, target, staging, production, columns, keys, scope, tolerances)
         } finally {
-            for (t in listOf("stg", "prod", "stg_u", "prod_u", "dup_s", "dup_p", "dup_keys", "diff", "cdiff", "sample")) {
-                runCatching { ws.execute("DROP TABLE IF EXISTS $t") }
-            }
+            scratch.dropAll()
+        }
+    }
+
+    /** The tables a Row Diff creates in the Test Run's DuckDB, so all of them can be dropped, whatever happens. */
+    private class Scratch(private val ws: Workspace) {
+        private val names = mutableListOf<String>()
+
+        fun adopt(name: String) { names += name }
+
+        fun create(name: String, select: String) {
+            adopt(name)
+            ws.execute("CREATE TABLE $name AS $select")
+        }
+
+        fun dropAll() {
+            for (name in names.asReversed()) runCatching { ws.execute("DROP TABLE IF EXISTS $name") }
         }
     }
 
     private fun diffKeyed(
         ctx: RunContext,
         ws: Workspace,
+        scratch: Scratch,
+        stg: KeyFingerprintTable,
+        prod: KeyFingerprintTable,
         target: TargetConfig,
-        staging: TargetSide,
-        production: TargetSide,
+        staging: TargetReader,
+        production: TargetReader,
         columns: List<ColumnMeta>,
         keys: List<ColumnMeta>,
         scope: BoundScope?,
         tolerances: Map<String, BigDecimal>,
     ): RowDiffResult {
-        val keyCols = keys.indices.map { "k$it" }
-        val keyList = keyCols.joinToString(", ")
+        val keyCols = stg.keyColumns
+        val keyList = stg.keyList
+        val fp = KeyFingerprintTable.FINGERPRINT
         val limit = props.mismatchSampleSize
 
         // A key that is not unique cannot be matched, so duplicated keys are reported on their own and left out of the diff.
-        ws.execute("CREATE TABLE dup_s AS SELECT $keyList, count(*) AS occurrences FROM stg GROUP BY $keyList HAVING count(*) > 1")
-        ws.execute("CREATE TABLE dup_p AS SELECT $keyList, count(*) AS occurrences FROM prod GROUP BY $keyList HAVING count(*) > 1")
-        ws.execute("CREATE TABLE dup_keys AS SELECT $keyList FROM dup_s UNION SELECT $keyList FROM dup_p")
+        scratch.create("dup_s", "SELECT $keyList, count(*) AS occurrences FROM ${stg.name} GROUP BY $keyList HAVING count(*) > 1")
+        scratch.create("dup_p", "SELECT $keyList, count(*) AS occurrences FROM ${prod.name} GROUP BY $keyList HAVING count(*) > 1")
+        scratch.create("dup_keys", "SELECT $keyList FROM dup_s UNION SELECT $keyList FROM dup_p")
         val antiJoin = keyCols.joinToString(" AND ") { "x.$it IS NOT DISTINCT FROM d.$it" }
-        ws.execute("CREATE TABLE stg_u AS SELECT x.* FROM stg x ANTI JOIN dup_keys d ON $antiJoin")
-        ws.execute("CREATE TABLE prod_u AS SELECT x.* FROM prod x ANTI JOIN dup_keys d ON $antiJoin")
+        scratch.create("stg_u", "SELECT x.* FROM ${stg.name} x ANTI JOIN dup_keys d ON $antiJoin")
+        scratch.create("prod_u", "SELECT x.* FROM ${prod.name} x ANTI JOIN dup_keys d ON $antiJoin")
 
         val join = keyCols.joinToString(" AND ") { "s.$it IS NOT DISTINCT FROM p.$it" }
-        ws.execute(
-            "CREATE TABLE diff AS SELECT ${keyCols.joinToString(", ") { "coalesce(s.$it, p.$it) AS $it" }}, " +
-                "CASE WHEN p.fp IS NULL THEN 'ONLY_IN_STAGING' WHEN s.fp IS NULL THEN 'ONLY_IN_PRODUCTION' ELSE 'DIFFERENT' END AS type " +
-                "FROM stg_u s FULL OUTER JOIN prod_u p ON $join WHERE s.fp IS DISTINCT FROM p.fp",
+        scratch.create(
+            "diff",
+            "SELECT ${keyCols.joinToString(", ") { "coalesce(s.$it, p.$it) AS $it" }}, " +
+                "CASE WHEN p.$fp IS NULL THEN 'ONLY_IN_STAGING' WHEN s.$fp IS NULL THEN 'ONLY_IN_PRODUCTION' ELSE 'DIFFERENT' END AS type " +
+                "FROM stg_u s FULL OUTER JOIN prod_u p ON $join WHERE s.$fp IS DISTINCT FROM p.$fp",
         )
         val counts = counts(ws)
         val sampleKeys = Type.entries.associateWith { sampleKeys(ws, it, keyCols, limit) }
 
-        val stagingRows = staging.fetchRows(target.staging, columns, keys, sampleKeys.getValue(Type.DIFFERENT) + sampleKeys.getValue(Type.ONLY_IN_STAGING), scope, ctx)
-        val productionRows = production.fetchRows(target.production, columns, keys, sampleKeys.getValue(Type.DIFFERENT) + sampleKeys.getValue(Type.ONLY_IN_PRODUCTION), scope, ctx)
+        val stagingRows = staging.fetchRows(target.staging, columns, keys, sampleKeys.getValue(Type.DIFFERENT) + sampleKeys.getValue(Type.ONLY_IN_STAGING), scope)
+        val productionRows = production.fetchRows(target.production, columns, keys, sampleKeys.getValue(Type.DIFFERENT) + sampleKeys.getValue(Type.ONLY_IN_PRODUCTION), scope)
         val samples = Type.entries.flatMap { type ->
             sampleKeys.getValue(type).map { tuple ->
                 val s = if (type != Type.ONLY_IN_PRODUCTION) stagingRows[tuple] else null
@@ -99,7 +123,7 @@ class RowDiffEngine(private val props: ShadowProperties, private val results: Re
                 )
             }
         }
-        val file = if (samples.isNotEmpty()) writeSamples(ctx, ws, target.name, samples) else null
+        val file = if (samples.isNotEmpty()) writeSamples(ctx, ws, scratch, target.name, samples) else null
         return RowDiffResult(
             status = "RAN",
             onlyInStaging = counts.getValue(Type.ONLY_IN_STAGING),
@@ -128,11 +152,13 @@ class RowDiffEngine(private val props: ShadowProperties, private val results: Re
     }
 
     /** Without a key rows cannot be matched, so only how often each distinct row content occurs on each side is compared. */
-    private fun diffKeyless(ws: Workspace): RowDiffResult {
+    private fun diffKeyless(ws: Workspace, scratch: Scratch, stg: KeyFingerprintTable, prod: KeyFingerprintTable): RowDiffResult {
         val limit = props.mismatchSampleSize
-        ws.execute(
-            "CREATE TABLE cdiff AS SELECT coalesce(s.fp, p.fp) AS fp, coalesce(s.n, 0) AS sn, coalesce(p.n, 0) AS pn " +
-                "FROM (SELECT fp, count(*) AS n FROM stg GROUP BY fp) s FULL OUTER JOIN (SELECT fp, count(*) AS n FROM prod GROUP BY fp) p ON s.fp = p.fp " +
+        val fp = KeyFingerprintTable.FINGERPRINT
+        scratch.create(
+            "cdiff",
+            "SELECT coalesce(s.$fp, p.$fp) AS $fp, coalesce(s.n, 0) AS sn, coalesce(p.n, 0) AS pn " +
+                "FROM (SELECT $fp, count(*) AS n FROM ${stg.name} GROUP BY $fp) s FULL OUTER JOIN (SELECT $fp, count(*) AS n FROM ${prod.name} GROUP BY $fp) p ON s.$fp = p.$fp " +
                 "WHERE coalesce(s.n, 0) <> coalesce(p.n, 0)",
         )
         val summary = ws.connection.createStatement().use { st ->
@@ -140,7 +166,7 @@ class RowDiffEngine(private val props: ShadowProperties, private val results: Re
                 rs.next(); Triple(rs.getLong(1), rs.getLong(2), rs.getLong(3))
             }
         }
-        val sample = ws.connection.prepareStatement("SELECT fp, sn, pn FROM cdiff ORDER BY abs(sn - pn) DESC, fp LIMIT ?").use { ps ->
+        val sample = ws.connection.prepareStatement("SELECT ${KeyFingerprintTable.FINGERPRINT}, sn, pn FROM cdiff ORDER BY abs(sn - pn) DESC, ${KeyFingerprintTable.FINGERPRINT} LIMIT ?").use { ps ->
             ps.setInt(1, limit)
             ps.executeQuery().use { rs -> buildList { while (rs.next()) add(CountDifference(rs.getString(1), rs.getLong(2), rs.getLong(3))) } }
         }
@@ -170,7 +196,8 @@ class RowDiffEngine(private val props: ShadowProperties, private val results: Re
             ps.executeQuery().use { rs -> buildList { while (rs.next()) add(keyCols.indices.map { rs.getString(it + 1) }) } }
         }
 
-    private fun writeSamples(ctx: RunContext, ws: Workspace, targetName: String, samples: List<Sample>): String {
+    private fun writeSamples(ctx: RunContext, ws: Workspace, scratch: Scratch, targetName: String, samples: List<Sample>): String {
+        scratch.adopt("sample")
         ws.execute("CREATE TABLE sample (mismatch_type VARCHAR, key VARCHAR, staging VARCHAR, production VARCHAR, differing_columns VARCHAR)")
         ws.connection.prepareStatement("INSERT INTO sample VALUES (?, ?, ?, ?, ?)").use { ps ->
             for (s in samples) {
