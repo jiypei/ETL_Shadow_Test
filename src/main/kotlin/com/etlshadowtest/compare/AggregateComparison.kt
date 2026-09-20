@@ -7,13 +7,18 @@ import java.math.BigDecimal
 
 /** Lines up the Aggregate Check values from both Environments, one check at a time. */
 object AggregateComparison {
+    /** True when no check that decides has found a difference. */
+    fun agree(checks: List<CheckResult>) = checks.all { it.agrees || !it.decisive }
+
     fun compare(spec: AggregateSpec, staging: AggregateValues, production: AggregateValues): List<CheckResult> = buildList {
         add(check("row_count", null, staging.rowCount.toBigDecimal(), production.rowCount.toBigDecimal()))
         val rows = maxOf(staging.rowCount, production.rowCount).toBigDecimal()
         for (column in spec.sumColumns) {
             val tolerance = spec.tolerances[column.name]
             // Every row within the tolerance means the sums can differ by at most tolerance times the row count.
-            add(check("sum", column.name, staging.sums[column.name], production.sums[column.name], tolerance?.multiply(rows), tolerance))
+            // Without a tolerance a floating-point sum depends on summation order, so it informs but the checksum decides.
+            val informational = column.floatingPoint && tolerance == null
+            add(check("sum", column.name, staging.sums[column.name], production.sums[column.name], tolerance?.multiply(rows), tolerance, informational))
         }
         for (column in spec.toleranceColumns) {
             val tolerance = spec.tolerances.getValue(column.name)
@@ -42,11 +47,17 @@ object AggregateComparison {
         production: BigDecimal?,
         allowedDifference: BigDecimal? = null,
         tolerance: BigDecimal? = null,
+        informational: Boolean = false,
     ) = CheckResult(
         name, column, staging, production,
         agrees = if (allowedDifference == null) equalDecimals(staging, production) else withinTolerance(staging, production, allowedDifference),
-        method = if (allowedDifference == null) "exact" else "tolerance",
+        method = when {
+            informational -> "informational"
+            allowedDifference == null -> "exact"
+            else -> "tolerance"
+        },
         tolerance = tolerance,
+        decisive = !informational,
     )
 
     private fun withinTolerance(a: BigDecimal?, b: BigDecimal?, allowed: BigDecimal) =

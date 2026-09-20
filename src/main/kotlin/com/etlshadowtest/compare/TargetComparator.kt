@@ -68,7 +68,7 @@ class TargetComparator(private val sides: TargetSides, private val rowDiff: RowD
         val stagingValues = staging.aggregate(target.staging, spec, bound, ctx)
         val productionValues = production.aggregate(target.production, spec, bound, ctx)
         val checks = AggregateComparison.compare(spec, stagingValues, productionValues)
-        if (checks.all { it.agrees }) {
+        if (AggregateComparison.agree(checks)) {
             return finish(target, Verdict.PASS, AggregateCheckResult(checks), rowDiff = RowDiffResult("SKIPPED", "Aggregate Check agreed"))
         }
         val diff = rowDiff.run(ctx, target, staging, production, compared, keys, fingerprint, bound, target.tolerances)

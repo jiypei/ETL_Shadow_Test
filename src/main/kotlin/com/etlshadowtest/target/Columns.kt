@@ -10,7 +10,16 @@ import java.time.format.DateTimeParseException
 enum class ColumnCategory { NUMERIC, TEXT, DATE, TIMESTAMP, TIMESTAMP_TZ, OTHER }
 
 /** A column as the Target's real metadata reports it. */
-data class ColumnMeta(val name: String, val dataType: String, val category: ColumnCategory)
+data class ColumnMeta(
+    val name: String,
+    val dataType: String,
+    val category: ColumnCategory,
+    /**
+     * An IEEE floating-point column (Oracle BINARY_FLOAT and BINARY_DOUBLE, Parquet FLOAT and DOUBLE). Adding such values
+     * is not associative, so a sum over identical values can differ with row order; decimals are exact.
+     */
+    val floatingPoint: Boolean = false,
+)
 
 /** The Comparison Scope with its range already converted to the scope column's type. */
 data class BoundScope(val column: String, val from: Any, val to: Any)

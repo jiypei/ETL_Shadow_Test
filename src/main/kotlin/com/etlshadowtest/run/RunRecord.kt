@@ -50,8 +50,14 @@ data class CheckResult(
     val staging: BigDecimal?,
     val production: BigDecimal?,
     val agrees: Boolean,
+    /** "exact", "tolerance", or "informational" (shown but not deciding, see [decisive]). */
     val method: String = "exact",
     val tolerance: BigDecimal? = null,
+    /**
+     * False for a check whose disagreement proves nothing, such as the sum of a floating-point column: its exactness is
+     * decided by the checksum over every value, so this one is reported for the size of a difference only.
+     */
+    val decisive: Boolean = true,
 )
 
 /** RAN with counts and a link to the sampled Mismatches, or SKIPPED with the reason. */

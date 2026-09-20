@@ -19,6 +19,7 @@ Each Target: `name`, `type` (`ORACLE` or `PARQUET`), `staging` and `production` 
 ## Rules worth knowing
 
 - Comparison is exact: Oracle `NUMBER` as decimal, NULL equals NULL, strings untrimmed, dates and timestamps as timestamps. Types that cannot be compared (LOBs, RAW, booleans, intervals) must be listed in `ignoredColumns`.
+- Floating-point columns (Oracle `BINARY_FLOAT`/`BINARY_DOUBLE`, Parquet `FLOAT`/`DOUBLE`): their sum depends on summation order, so it is reported as `informational` (`decisive: false`) and cannot fail a Target by itself; the exact per-value checksum, null counts and Row Diff decide. A column with a tolerance is still checked by sum, min and max within the tolerance. Decimal sums stay exact and decisive.
 - A column present on one side only, or with a different type, is a schema difference and a FAIL.
 - A Target found in neither Environment is a rejected typo; found in one only it is an ERROR (ADR 0005). A Pipeline in which every Target is SKIPPED has Verdict SKIPPED.
 - Sampled Mismatches: at most `mismatch-sample-size` (default 100) per Mismatch type and Target, written to `results/{pipeline}/{id}/mismatches/{target}.parquet`.

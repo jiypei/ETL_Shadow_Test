@@ -50,7 +50,7 @@ class ParquetSide(override val environment: String, private val minio: MinioProp
         metadataConnection().use { c ->
             c.createStatement().use { s ->
                 s.executeQuery("DESCRIBE SELECT * FROM ${dataset(location)}").use { rs ->
-                    buildList { while (rs.next()) add(ColumnMeta(rs.getString("column_name"), rs.getString("column_type"), DuckSql.categoryOf(rs.getString("column_type")))) }
+                    buildList { while (rs.next()) add(ColumnMeta(rs.getString("column_name"), rs.getString("column_type"), DuckSql.categoryOf(rs.getString("column_type")), rs.getString("column_type") in setOf("FLOAT", "DOUBLE"))) }
                 }
             }
         }
