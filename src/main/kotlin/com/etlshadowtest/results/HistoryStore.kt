@@ -88,6 +88,25 @@ class HistoryStore(private val props: ShadowProperties, private val results: Res
         }
     }
 
+    /** Test Runs of every Pipeline whose record still says RUNNING, for the sweep that finds abandoned ones. */
+    fun listRunning(): List<RunningRef> {
+        results.ensureBucket()
+        val glob = "s3://${props.results.minio.bucket}/results/*/*/run.json"
+        val sql = "SELECT pipeline, testRunId, heartbeatAt FROM read_json(${Workspace.literal(glob)}, format = 'auto', maximum_object_size = 8388608, " +
+            "columns = {pipeline: 'VARCHAR', testRunId: 'VARCHAR', status: 'VARCHAR', heartbeatAt: 'VARCHAR'}) WHERE status = 'RUNNING'"
+        return try {
+            connection().use { c ->
+                c.createStatement().use { s ->
+                    s.executeQuery(sql).use { rs -> buildList { while (rs.next()) add(RunningRef(rs.getString(1), rs.getString(2), rs.getString(3))) } }
+                }
+            }
+        } catch (e: SQLException) {
+            if (e.message?.contains("No files found") == true) emptyList() else throw e
+        }
+    }
+
     private fun targets(json: String): List<TargetVerdict> =
         mapper.readTree(json).map { TargetVerdict(it["name"].asText(), Verdict.valueOf(it["verdict"].asText())) }
 }
+
+data class RunningRef(val pipeline: String, val testRunId: String, val heartbeatAt: String)

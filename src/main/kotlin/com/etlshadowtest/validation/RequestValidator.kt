@@ -11,6 +11,7 @@ import com.etlshadowtest.target.ColumnMeta
 import com.etlshadowtest.target.ScopeValues
 import com.etlshadowtest.target.TargetSide
 import com.etlshadowtest.target.TargetSides
+import com.etlshadowtest.webhook.WebhookPolicy
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
 
@@ -19,7 +20,7 @@ val SAFE_NAME = Regex("[A-Za-z0-9._-]{1,100}")
 
 /** Rejects a request up front, before any Test Run exists, with an error that names the problem. */
 @Component
-class RequestValidator(private val sides: TargetSides) {
+class RequestValidator(private val sides: TargetSides, private val webhooks: WebhookPolicy) {
     private sealed interface Lookup {
         class Found(val columns: List<ColumnMeta>) : Lookup
         data object Missing : Lookup
@@ -32,6 +33,7 @@ class RequestValidator(private val sides: TargetSides) {
         val problems = mutableListOf<String>()
         if (!SAFE_NAME.matches(request.pipeline)) problems += "Pipeline name must consist of letters, digits, '.', '_' or '-'"
         if (request.config.targets.isEmpty()) problems += "The Comparison Config must name at least one Target"
+        request.callbackUrl?.let { url -> webhooks.problem(url)?.let { problems += it } }
         val names = request.config.targets.map { it.name }
         if (names.toSet().size != names.size) problems += "Target names must be unique"
 

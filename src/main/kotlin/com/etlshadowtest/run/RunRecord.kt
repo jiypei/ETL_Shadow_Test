@@ -23,6 +23,9 @@ data class RunRecord(
     val targets: List<TargetResult> = emptyList(),
     /** Targets that were skipped (New Targets): they are not part of the Verdict and nothing was checked for them. */
     val unverifiedTargets: List<String> = emptyList(),
+    val callbackUrl: String? = null,
+    /** What became of the callback; null when the trigger named none. */
+    val callback: CallbackResult? = null,
 )
 
 data class TargetResult(
@@ -101,3 +104,6 @@ data class HistoryEntry(
 data class TargetVerdict(val name: String, val verdict: Verdict)
 
 data class History(val pipeline: String, val testRuns: List<HistoryEntry>)
+
+/** PENDING until delivered (2xx) or given up on after the configured attempts. */
+data class CallbackResult(val status: String, val attempts: Int, val lastError: String? = null, val deliveredAt: String? = null)

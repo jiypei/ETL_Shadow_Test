@@ -20,6 +20,20 @@ data class ShadowProperties(
     val duckdb: DuckDbProperties,
     /** Caller tokens; with none configured every API call is rejected. */
     val tokens: List<TokenProperties> = emptyList(),
+    /** How often a sweep looks for Test Runs whose instance died, to mark them abandoned and send their callback. */
+    @DefaultValue("30s") val reaperInterval: Duration,
+    @DefaultValue val webhook: WebhookProperties,
+)
+
+data class WebhookProperties(
+    /** Hosts a callback may be sent to. With none, callbacks are not enabled and a request naming one is rejected. */
+    val allowedHosts: List<String> = emptyList(),
+    /** Attempts in total, the first included. */
+    @DefaultValue("3") val maxAttempts: Int,
+    @DefaultValue("1s") val initialBackoff: Duration,
+    /** Each pause is this many times the one before: 1s, 5s, then 25s with the defaults. */
+    @DefaultValue("5") val backoffMultiplier: Int,
+    @DefaultValue("10s") val timeout: Duration,
 )
 
 data class TokenProperties(val token: String, val pipeline: String, val targets: List<String>)

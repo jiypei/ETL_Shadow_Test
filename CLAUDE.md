@@ -4,7 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-Design only. The repo holds no code, build files or tests yet, so there are no build/lint/test commands. Update this file once the Kotlin/Spring Boot project exists.
+Implemented: tickets 01 to 15 in `.scratch/etl-shadow-test/issues/` (Kotlin 2.2, Spring Boot 3.5, JDK 21, Gradle). API and configuration are in `docs/operations.md`.
+
+## Commands
+
+- Needs JDK 21 (`JAVA_HOME=/opt/homebrew/opt/openjdk@21` on this machine) and a running Docker: tests start two Oracle Free containers (`gvenzl/oracle-free:23-slim-faststart`) and one MinIO (`quay.io/minio/minio`) through Testcontainers. Pull these images first; Docker Hub no longer serves `minio/minio`.
+- All tests: `gradle test`. One class: `gradle test --tests '*RowDiffTest'`. There is no separate lint step.
+- The seam is the public API: tests trigger and poll Test Runs through HTTP and assert on Verdicts, reports and MinIO contents. Do not test internal classes directly.
+- Tests that must change a connection or limit extend `ShadowTestSupport` and register their own properties via `TestEnvironment.registerProperties(registry, overrides)`. Extend `ShadowTestBase` otherwise. Two `@DynamicPropertySource` methods in one hierarchy do not override each other reliably.
+- If MinIO returns `RequestTimeTooSkewed`, the Docker VM clock has drifted (after sleep). Reset it with a privileged container: `docker run --rm --privileged --entrypoint sh <local image> -c "date -u -s @$(date -u +%s)"`.
+
+## Layout
+
+`api` (controller, request/error types), `auth` (bearer tokens), `validation` (request checks against real metadata), `run` (Test Run service, record, heartbeat, sweep), `compare` (per-Target comparison, Aggregate Check, Row Diff), `target`/`oracle`/`parquet` (`TargetSide` implementations and SQL builders), `duckdb` (per-run workspace), `results` (MinIO run records, history), `webhook`.
 
 Read these before designing or implementing anything:
 - `CONTEXT.md`: the glossary. Use its terms exactly (Target, Test Run, Comparison Scope, Comparison Config, Aggregate Check, Row Diff, Row Fingerprint, Verdict, ...) and respect the `_Avoid_` words. Keep it a glossary only, with no implementation detail.

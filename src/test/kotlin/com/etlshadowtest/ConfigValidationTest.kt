@@ -165,4 +165,11 @@ class ConfigValidationTest : ShadowTestBase() {
         ParquetFixtures.production(path, "ID BIGINT", listOf(listOf(1L)))
         assertThat(api.run(shadowRequest(uniqueName("p"), parquetTarget("events", path)))["verdict"]!!.asText()).isEqualTo("PASS")
     }
+
+    @Test
+    fun `a callback address is rejected when no callback hosts are configured`() {
+        val response = api.trigger(shadowRequest(uniqueName("p"), oracleTarget("orders", table()), callbackUrl = "http://127.0.0.1:9/hook"))
+        assertThat(response.status).isEqualTo(400)
+        assertThat(response.raw).contains("callbackUrl").contains("not enabled")
+    }
 }

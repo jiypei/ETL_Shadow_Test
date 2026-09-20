@@ -42,6 +42,13 @@ class ProductionLimitsTest : ShadowTestSupport() {
     @Test
     fun `the number of connections and the parallelism of Production queries are limited and respected`() {
         val tables = List(4) { bigTable() }
+        // Other test classes' cached services keep idle connections of the same account open, so count only what is added.
+        val baseline = production.connect("system", TestEnvironment.SYSTEM_PASSWORD).use { c ->
+            c.prepareStatement("SELECT COUNT(*) FROM V\$SESSION WHERE USERNAME = ?").use { ps ->
+                ps.setString(1, TestEnvironment.PRODUCTION_READER)
+                ps.executeQuery().use { rs -> rs.next(); rs.getInt(1) }
+            }
+        }
         val maxSessions = AtomicInteger()
         val maxActive = AtomicInteger()
         val running = AtomicBoolean(true)
@@ -65,6 +72,6 @@ class ProductionLimitsTest : ShadowTestSupport() {
 
         assertThat(verdicts).allMatch { it == "FAIL" }
         assertThat(maxActive.get()).describedAs("Production queries running at the same time").isEqualTo(1)
-        assertThat(maxSessions.get()).describedAs("connections to Production").isBetween(1, 2)
+        assertThat(maxSessions.get() - baseline).describedAs("connections opened to Production by this service").isBetween(1, 2)
     }
 }

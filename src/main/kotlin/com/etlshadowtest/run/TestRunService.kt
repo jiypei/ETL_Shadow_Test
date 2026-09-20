@@ -7,6 +7,7 @@ import com.etlshadowtest.config.ShadowProperties
 import com.etlshadowtest.duckdb.Workspace
 import com.etlshadowtest.validation.RequestValidator
 import com.etlshadowtest.results.HistoryStore
+import com.etlshadowtest.webhook.WebhookNotifier
 import com.etlshadowtest.results.ResultsStore
 import jakarta.annotation.PostConstruct
 import jakarta.annotation.PreDestroy
@@ -38,21 +39,28 @@ class TestRunService(
     private val comparator: TargetComparator,
     private val validator: RequestValidator,
     private val props: ShadowProperties,
+    private val webhook: WebhookNotifier,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
     private val active = ConcurrentHashMap<String, ActiveRun>()
     private val slots = Semaphore(props.maxConcurrentRuns.coerceAtLeast(1))
     private val heartbeats = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "heartbeat").apply { isDaemon = true } }
 
+    /** Kept apart from the heartbeats: a slow scan of MinIO must never delay a heartbeat and make a live Test Run look dead. */
+    private val sweeper = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "abandoned-sweep").apply { isDaemon = true } }
+
     @PostConstruct
     fun startHeartbeats() {
         val period = props.heartbeatInterval.toMillis().coerceAtLeast(50)
         heartbeats.scheduleWithFixedDelay(::beat, period, period, TimeUnit.MILLISECONDS)
+        val sweep = props.reaperInterval.toMillis().coerceAtLeast(100)
+        sweeper.scheduleWithFixedDelay(::sweepAbandoned, sweep, sweep, TimeUnit.MILLISECONDS)
     }
 
     @PreDestroy
     fun stopHeartbeats() {
         heartbeats.shutdownNow()
+        sweeper.shutdownNow()
     }
 
     /** Refreshes the heartbeat of every Test Run this instance is running, including ones waiting to start. */
@@ -63,6 +71,29 @@ class TestRunService(
             } catch (e: Exception) {
                 log.warn("Could not write the heartbeat of Test Run {}", run.record.testRunId, e)
             }
+        }
+    }
+
+    /**
+     * A dead instance cannot report its own Test Runs, so this instance does: a record that still says RUNNING with a stale
+     * heartbeat, and that this instance is not running, is stored as ABANDONED and its callback is sent once.
+     */
+    private fun sweepAbandoned() {
+        try {
+            for (ref in historyStore.listRunning()) {
+                if (active.containsKey(ref.testRunId) || !isAbandoned(RunStatus.RUNNING, ref.heartbeatAt)) continue
+                val record = results.read(ref.pipeline, ref.testRunId) ?: continue
+                if (!isAbandoned(record.status, record.heartbeatAt)) continue
+                val abandoned = reportAbandoned(record).copy(
+                    finishedAt = now(),
+                    callback = record.callbackUrl?.let { CallbackResult("PENDING", 0) },
+                )
+                results.write(abandoned)
+                log.warn("Test Run {} of Pipeline {} was abandoned", ref.testRunId, ref.pipeline)
+                webhook.notify(abandoned)
+            }
+        } catch (e: Exception) {
+            log.warn("Sweep for abandoned Test Runs failed", e)
         }
     }
 
@@ -77,6 +108,7 @@ class TestRunService(
             heartbeatAt = ts,
             scope = request.scope,
             config = request.config,
+            callbackUrl = request.callbackUrl,
         )
         // Duckdb memory and temp disk are sized for the cap, so a trigger beyond it is turned away, not queued (ADR 0004).
         if (!slots.tryAcquire()) {
@@ -132,6 +164,7 @@ class TestRunService(
     private fun execute(run: ActiveRun) {
         val started = run.record
         var final: RunRecord
+        var finished: RunRecord? = null
         try {
             val targets = RunContext(started.testRunId, started.pipeline, ::newWorkspace).use { ctx ->
                 started.config.targets.map { comparator.compare(ctx, it, started.scope) }
@@ -143,13 +176,19 @@ class TestRunService(
             final = started.copy(verdict = Verdict.ERROR, reason = "Test Run failed: ${e.message}")
         }
         try {
-            run.finish(final.copy(status = RunStatus.COMPLETED, finishedAt = now(), heartbeatAt = now()))
+            val stored = final.copy(
+                status = RunStatus.COMPLETED, finishedAt = now(), heartbeatAt = now(),
+                callback = started.callbackUrl?.let { CallbackResult("PENDING", 0) },
+            )
+            run.finish(stored)
+            finished = stored
         } catch (e: Exception) {
             log.error("Could not store the result of Test Run {}", started.testRunId, e)
         } finally {
             active.remove(started.testRunId)
             slots.release()
         }
+        finished?.let(webhook::notify)
     }
 }
 
