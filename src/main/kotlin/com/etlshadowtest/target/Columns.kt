@@ -17,8 +17,14 @@ data class BoundScope(val column: String, val from: Any, val to: Any)
 
 object ScopeValues {
     /** Converts a scope bound to the value type of the scope column, or fails with a message naming the problem. */
-    fun bind(column: ColumnMeta, range: ScopeRange): BoundScope =
-        BoundScope(column.name, convert(column, range.from, "from"), convert(column, range.to, "to"))
+    fun bind(column: ColumnMeta, range: ScopeRange): BoundScope {
+        val from = convert(column, range.from, "from")
+        val to = convert(column, range.to, "to")
+        // The bounds have the same type, so they compare. An empty range would compare nothing and pass.
+        @Suppress("UNCHECKED_CAST")
+        require((from as Comparable<Any>).compareTo(to) < 0) { "scope 'from' (${range.from}) must be before 'to' (${range.to})" }
+        return BoundScope(column.name, from, to)
+    }
 
     private fun convert(column: ColumnMeta, text: String, bound: String): Any = try {
         when (column.category) {

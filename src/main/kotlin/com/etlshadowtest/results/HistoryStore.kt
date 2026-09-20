@@ -44,15 +44,18 @@ class HistoryStore(private val props: ShadowProperties, private val results: Res
         return (root as DuckDBConnection).duplicate()
     }
 
+    // Records are written as one line of JSON, so newline_delimited applies, and it lets DuckDB skip an unreadable record
+    // instead of failing the whole query (one damaged run.json must not blind the history or the abandoned sweep).
     /** [pipeline] must already be a safe name; [from] is inclusive and [to] exclusive, both in the run records' timestamp format. */
     fun list(pipeline: String, from: String?, to: String?, limit: Int): List<HistoryEntry> {
         results.ensureBucket()
         val glob = "s3://${props.results.minio.bucket}/results/$pipeline/*/run.json"
         val sql = "SELECT testRunId, status, startedAt, finishedAt, heartbeatAt, verdict, reason, scope, targets, unverifiedTargets " +
-            "FROM read_json(${Workspace.literal(glob)}, format = 'auto', maximum_object_size = 8388608, columns = {" +
+            "FROM read_json(${Workspace.literal(glob)}, format = 'newline_delimited', maximum_object_size = 8388608, ignore_errors = true, columns = {" +
             "testRunId: 'VARCHAR', status: 'VARCHAR', startedAt: 'VARCHAR', finishedAt: 'VARCHAR', heartbeatAt: 'VARCHAR', " +
             "verdict: 'VARCHAR', reason: 'VARCHAR', scope: 'JSON', targets: 'JSON', unverifiedTargets: 'JSON'}) " +
-            "WHERE (?::VARCHAR IS NULL OR startedAt >= ?) AND (?::VARCHAR IS NULL OR startedAt < ?) " +
+            "WHERE testRunId IS NOT NULL AND status IS NOT NULL AND startedAt IS NOT NULL AND heartbeatAt IS NOT NULL " +
+            "AND (?::VARCHAR IS NULL OR startedAt >= ?) AND (?::VARCHAR IS NULL OR startedAt < ?) " +
             "ORDER BY startedAt DESC, testRunId LIMIT ?"
         return try {
             connection().use { c ->
@@ -92,8 +95,8 @@ class HistoryStore(private val props: ShadowProperties, private val results: Res
     fun listRunning(): List<RunningRef> {
         results.ensureBucket()
         val glob = "s3://${props.results.minio.bucket}/results/*/*/run.json"
-        val sql = "SELECT pipeline, testRunId, heartbeatAt FROM read_json(${Workspace.literal(glob)}, format = 'auto', maximum_object_size = 8388608, " +
-            "columns = {pipeline: 'VARCHAR', testRunId: 'VARCHAR', status: 'VARCHAR', heartbeatAt: 'VARCHAR'}) WHERE status = 'RUNNING'"
+        val sql = "SELECT pipeline, testRunId, heartbeatAt FROM read_json(${Workspace.literal(glob)}, format = 'newline_delimited', maximum_object_size = 8388608, ignore_errors = true, " +
+            "columns = {pipeline: 'VARCHAR', testRunId: 'VARCHAR', status: 'VARCHAR', heartbeatAt: 'VARCHAR'}) WHERE status = 'RUNNING' AND pipeline IS NOT NULL AND testRunId IS NOT NULL AND heartbeatAt IS NOT NULL"
         return try {
             connection().use { c ->
                 c.createStatement().use { s ->

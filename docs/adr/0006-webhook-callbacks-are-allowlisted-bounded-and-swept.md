@@ -13,5 +13,6 @@ A trigger may name a callback address. Because that address comes from the calle
 
 ## Consequences
 
+- This amends ADR 0002's "single writer" note: while a Test Run runs, only its own instance writes `run.json`; afterwards the callback outcome is added to it, and the sweep only rewrites records that no instance is running, so writes to one object still never race.
 - The sweep scans every Pipeline's run records for RUNNING ones, so its cost grows with history; move old records out of the results bucket, or add an index, if that becomes slow.
 - The callback address is stored in `run.json`, so it must not carry secrets.

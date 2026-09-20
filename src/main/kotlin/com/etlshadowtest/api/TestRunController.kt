@@ -21,6 +21,7 @@ import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 
 private const val MAX_HISTORY = 500
+private val UUID_FORMAT = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 @RestController
 @RequestMapping("/api/v1")
@@ -44,6 +45,7 @@ class TestRunController(private val service: TestRunService) {
         @RequestAttribute(PRINCIPAL_ATTRIBUTE) principal: Principal,
     ): RunRecord {
         requireAccess(principal, pipeline)
+        if (!UUID_FORMAT.matches(testRunId)) throw ApiException(HttpStatus.BAD_REQUEST, "A Test Run ID is a UUID")
         return service.get(pipeline, testRunId)
     }
 

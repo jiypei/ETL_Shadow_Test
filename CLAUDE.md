@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Implemented: tickets 01 to 15 in `.scratch/etl-shadow-test/issues/` (Kotlin 2.2, Spring Boot 3.5, JDK 21, Gradle). API and configuration are in `docs/operations.md`.
 
+Read these before designing or implementing anything:
+- `CONTEXT.md`: the glossary. Use its terms exactly (Target, Test Run, Comparison Scope, Comparison Config, Aggregate Check, Row Diff, Row Fingerprint, Verdict, ...) and respect the `_Avoid_` words. Keep it a glossary only, with no implementation detail.
+- `docs/adr/`: decisions that look wrong without context. Do not "fix" them without superseding the ADR.
+
 ## Commands
 
 - Needs JDK 21 (`JAVA_HOME=/opt/homebrew/opt/openjdk@21` on this machine) and a running Docker: tests start two Oracle Free containers (`gvenzl/oracle-free:23-slim-faststart`) and one MinIO (`quay.io/minio/minio`) through Testcontainers. Pull these images first; Docker Hub no longer serves `minio/minio`.
@@ -17,10 +21,6 @@ Implemented: tickets 01 to 15 in `.scratch/etl-shadow-test/issues/` (Kotlin 2.2,
 ## Layout
 
 `api` (controller, request/error types), `auth` (bearer tokens), `validation` (request checks against real metadata), `run` (Test Run service, record, heartbeat, sweep), `compare` (per-Target comparison, Aggregate Check, Row Diff), `target`/`oracle`/`parquet` (`TargetSide` implementations and SQL builders), `duckdb` (per-run workspace), `results` (MinIO run records, history), `webhook`.
-
-Read these before designing or implementing anything:
-- `CONTEXT.md`: the glossary. Use its terms exactly (Target, Test Run, Comparison Scope, Comparison Config, Aggregate Check, Row Diff, Row Fingerprint, Verdict, ...) and respect the `_Avoid_` words. Keep it a glossary only, with no implementation detail.
-- `docs/adr/`: decisions that look wrong without context. Do not "fix" them without superseding the ADR.
 
 ## What this is
 

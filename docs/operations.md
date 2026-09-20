@@ -40,6 +40,6 @@ Each Target: `name`, `type` (`ORACLE` or `PARQUET`), `staging` and `production` 
 
 ## Deployment
 
-- One replica, `Recreate` strategy (ADR 0002). Container memory limit = JVM heap + `max-concurrent-runs` x `duckdb.memory-limit` + headroom, and give `duckdb.temp-directory` enough disk for a Row Diff on your largest Target.
+- One replica, `Recreate` strategy (ADR 0002). Container memory limit = JVM heap + `max-concurrent-runs` x `duckdb.memory-limit` + 768MB for the three small fixed DuckDB instances (256MB each, for history and for reading Parquet schemas in Staging and Production) + headroom, and give `duckdb.temp-directory` enough disk for a Row Diff on your largest Target.
 - DuckDB installs its `httpfs` extension on first use; on a cluster without internet access, pre-install it and set `duckdb.extension-directory`.
 - Parquet in the Staging, Production and results buckets is reached through one DuckDB secret per bucket, so the three buckets must have different names.

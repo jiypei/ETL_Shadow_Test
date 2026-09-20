@@ -51,6 +51,9 @@ class TestRunService(
 
     @PostConstruct
     fun startHeartbeats() {
+        require(props.heartbeatStaleAfter >= props.heartbeatInterval.multipliedBy(3)) {
+            "shadow.heartbeat-stale-after must be at least three times shadow.heartbeat-interval, or live Test Runs would look abandoned"
+        }
         val period = props.heartbeatInterval.toMillis().coerceAtLeast(50)
         heartbeats.scheduleWithFixedDelay(::beat, period, period, TimeUnit.MILLISECONDS)
         val sweep = props.reaperInterval.toMillis().coerceAtLeast(100)
@@ -98,19 +101,8 @@ class TestRunService(
     }
 
     fun trigger(request: TriggerRequest): RunRecord {
-        validator.validate(request)
-        val ts = now()
-        val record = RunRecord(
-            testRunId = UUID.randomUUID().toString(),
-            pipeline = request.pipeline,
-            status = RunStatus.RUNNING,
-            startedAt = ts,
-            heartbeatAt = ts,
-            scope = request.scope,
-            config = request.config,
-            callbackUrl = request.callbackUrl,
-        )
-        // Duckdb memory and temp disk are sized for the cap, so a trigger beyond it is turned away, not queued (ADR 0004).
+        // Checked first, so a caller that will be turned away costs no metadata queries against the Environments.
+        // DuckDB memory and temp disk are sized for the cap, so a trigger beyond it is turned away, not queued (ADR 0004).
         if (!slots.tryAcquire()) {
             throw ApiException(
                 HttpStatus.TOO_MANY_REQUESTS,
@@ -118,24 +110,39 @@ class TestRunService(
                 headers = mapOf("Retry-After" to props.retryAfter.seconds.toString()),
             )
         }
-        val run = ActiveRun(record, results)
+        val run: ActiveRun
         try {
+            validator.validate(request)
+            val ts = now()
+            val record = RunRecord(
+                testRunId = UUID.randomUUID().toString(),
+                pipeline = request.pipeline,
+                status = RunStatus.RUNNING,
+                startedAt = ts,
+                heartbeatAt = ts,
+                scope = request.scope,
+                config = request.config,
+                callbackUrl = request.callbackUrl,
+            )
+            run = ActiveRun(record, results)
             run.start()
             active[record.testRunId] = run
             executor.execute { execute(run) }
         } catch (e: Throwable) {
-            active.remove(record.testRunId)
             slots.release()
             throw e
         }
-        return record
+        return run.record
     }
 
     private fun newWorkspace(testRunId: String) =
         Workspace(Path.of(props.duckdb.tempDirectory).resolve(testRunId), props.duckdb.memoryLimit, props.duckdb.threads)
 
-    fun get(pipeline: String, testRunId: String): RunRecord =
-        results.read(pipeline, testRunId)?.let(::reportAbandoned) ?: throw ApiException(HttpStatus.NOT_FOUND, "Test Run $testRunId not found")
+    fun get(pipeline: String, testRunId: String): RunRecord {
+        val record = results.read(pipeline, testRunId) ?: throw ApiException(HttpStatus.NOT_FOUND, "Test Run $testRunId not found")
+        // A Test Run this instance is running is alive, even if writing its heartbeat to MinIO has been failing.
+        return if (active.containsKey(testRunId)) record else reportAbandoned(record)
+    }
 
     /** A Test Run whose heartbeat stopped is not running any more, whatever its record says: report it as ERROR (abandoned). */
     fun reportAbandoned(record: RunRecord): RunRecord {

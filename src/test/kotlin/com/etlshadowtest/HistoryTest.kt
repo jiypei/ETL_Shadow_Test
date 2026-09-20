@@ -144,4 +144,14 @@ class HistoryTest : ShadowTestBase() {
         assertThat(api.history(pipeline, "?limit=abc").status).isEqualTo(400)
         assertThat(api.history("../etc").status).isIn(400, 404)
     }
+
+    @Test
+    fun `one unreadable record does not break the history`() {
+        val pipeline = uniqueName("p")
+        val good = run(pipeline, passing())
+        MinioFixtures.writeRunJson(pipeline, "66666666-6666-6666-6666-666666666666", com.fasterxml.jackson.databind.ObjectMapper().createObjectNode().put("junk", true))
+        MinioFixtures.writeText("shadow-results", "results/$pipeline/77777777-7777-7777-7777-777777777777/run.json", "{ this is not json")
+        val ids = api.history(pipeline).runs().map { it["testRunId"].asText() }
+        assertThat(ids).contains(good.testRunId)
+    }
 }

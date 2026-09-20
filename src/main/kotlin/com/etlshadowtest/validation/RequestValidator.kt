@@ -18,6 +18,8 @@ import org.springframework.stereotype.Component
 /** Pipeline and Target names end up in object keys and paths, so they are restricted to a safe alphabet. */
 val SAFE_NAME = Regex("[A-Za-z0-9._-]{1,100}")
 
+private val KEY_CATEGORIES = setOf(ColumnCategory.NUMERIC, ColumnCategory.TEXT, ColumnCategory.DATE, ColumnCategory.TIMESTAMP)
+
 /** Rejects a request up front, before any Test Run exists, with an error that names the problem. */
 @Component
 class RequestValidator(private val sides: TargetSides, private val webhooks: WebhookPolicy) {
@@ -99,6 +101,7 @@ class RequestValidator(private val sides: TargetSides, private val webhooks: Web
             for (name in target.ignoredColumns) if (name !in known) add("Target '${target.name}': ignored column '$name' does not exist")
             for (name in target.keyColumns.intersect(target.ignoredColumns.toSet())) add("Target '${target.name}': key column '$name' cannot be ignored")
             addAll(unsupportedTypes(target, columns))
+            addAll(keyTypeProblems(target, columns))
             addAll(toleranceProblems(target, columns))
             val scopeColumn = target.scopeColumn
             if (scopeColumn != null && request.scope != null) scopeProblem(target, scopeColumn, columns, request)?.let { add(it) }
@@ -124,6 +127,14 @@ class RequestValidator(private val sides: TargetSides, private val webhooks: Web
     private fun unsupportedTypes(target: TargetConfig, columns: List<ColumnMeta>): List<String> =
         columns.filter { it.category == ColumnCategory.OTHER && it.name !in target.ignoredColumns }.map {
             "Target '${target.name}': column '${it.name}' has type ${it.dataType}, which cannot be compared; add it to ignoredColumns"
+        }
+
+    /** Keys are matched by their text and bound back as values, which is only possible for these types. */
+    private fun keyTypeProblems(target: TargetConfig, columns: List<ColumnMeta>): List<String> =
+        target.keyColumns.mapNotNull { name ->
+            val column = columns.firstOrNull { it.name == name } ?: return@mapNotNull null
+            if (column.category in KEY_CATEGORIES) null
+            else "Target '${target.name}': key column '$name' has type ${column.dataType}, which cannot be used as a key"
         }
 
     private fun toleranceProblems(target: TargetConfig, columns: List<ColumnMeta>): List<String> =

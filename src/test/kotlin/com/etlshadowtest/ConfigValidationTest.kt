@@ -172,4 +172,18 @@ class ConfigValidationTest : ShadowTestBase() {
         assertThat(response.status).isEqualTo(400)
         assertThat(response.raw).contains("callbackUrl").contains("not enabled")
     }
+
+    @Test
+    fun `a key column of a type that cannot be matched is rejected up front`() {
+        val t = uniqueName("TZ")
+        for (db in listOf(staging, production)) db.createTable(t, "ID TIMESTAMP WITH TIME ZONE, NAME VARCHAR2(10)")
+        val response = rejected(uniqueName("p"), oracleTarget("orders", t))
+        assertThat(response.raw).contains("key column 'ID'").contains("cannot be used as a key")
+    }
+
+    @Test
+    fun `a Test Run ID that is not a UUID is rejected`() {
+        assertThat(api.poll(uniqueName("p"), "not-a-uuid").status).isEqualTo(400)
+        assertThat(api.poll(uniqueName("p"), "../../x").status).isIn(400, 404)
+    }
 }

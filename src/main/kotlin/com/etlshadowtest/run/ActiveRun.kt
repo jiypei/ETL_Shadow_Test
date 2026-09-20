@@ -3,8 +3,9 @@ package com.etlshadowtest.run
 import com.etlshadowtest.results.ResultsStore
 
 /**
- * A Test Run this instance is executing. All writes of its record go through here, one at a time, so a heartbeat
- * can never overwrite the final result and the record in MinIO always has a single writer (ADR 0002).
+ * A Test Run this instance is executing. Every write of its record while it runs goes through here, one at a time,
+ * so a heartbeat can never overwrite the final result. After it ends, only the callback outcome (WebhookNotifier)
+ * is added to its record, and the abandoned sweep only touches records that no instance is running (ADR 0006).
  */
 class ActiveRun(record: RunRecord, private val results: ResultsStore) {
     @Volatile

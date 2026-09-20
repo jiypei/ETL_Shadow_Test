@@ -117,4 +117,14 @@ class ComparisonScopeTest : ShadowTestBase() {
         assertThat(record["scope"]["from"].asText()).isEqualTo("2026-01-01")
         assertThat(record["scope"]["to"].asText()).isEqualTo("2026-02-01")
     }
+
+    @Test
+    fun `an empty or inverted scope range is rejected instead of comparing nothing`() {
+        val t = table(listOf("2026-01-10"), listOf("2026-01-10"))
+        for (range in listOf(mapOf("from" to "2026-02-01", "to" to "2026-01-01"), mapOf("from" to "2026-01-01", "to" to "2026-01-01"))) {
+            val response = api.trigger(shadowRequest(uniqueName("p"), scoped(t), scope = range))
+            assertThat(response.status).isEqualTo(400)
+            assertThat(response.raw).contains("must be before")
+        }
+    }
 }
