@@ -110,6 +110,16 @@ class AuthenticationTest {
     }
 
     @Test
+    fun `a token cannot read another Pipeline's history and needs a token for its own`() {
+        client(TOKEN_A).run(request(pipelineA, "orders"))
+        assertThat(client(TOKEN_B).history(pipelineA).status).isEqualTo(403)
+        assertThat(client(null).history(pipelineA).status).isEqualTo(401)
+        val own = client(TOKEN_A).history(pipelineA)
+        assertThat(own.status).isEqualTo(200)
+        assertThat(own["testRuns"]!!.size()).isGreaterThan(0)
+    }
+
+    @Test
     fun `tokens never appear in stored results or logs`(output: CapturedOutput) {
         val a = client(TOKEN_A)
         val done = a.run(request(pipelineA, "orders"))

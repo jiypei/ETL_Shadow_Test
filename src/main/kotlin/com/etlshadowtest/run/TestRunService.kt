@@ -6,6 +6,7 @@ import com.etlshadowtest.compare.TargetComparator
 import com.etlshadowtest.config.ShadowProperties
 import com.etlshadowtest.duckdb.Workspace
 import com.etlshadowtest.validation.RequestValidator
+import com.etlshadowtest.results.HistoryStore
 import com.etlshadowtest.results.ResultsStore
 import jakarta.annotation.PostConstruct
 import jakarta.annotation.PreDestroy
@@ -25,11 +26,14 @@ import java.util.concurrent.TimeUnit
 
 private val TIMESTAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC)
 
-fun now(): String = TIMESTAMP.format(Instant.now())
+fun timestamp(instant: Instant): String = TIMESTAMP.format(instant)
+
+fun now(): String = timestamp(Instant.now())
 
 @Service
 class TestRunService(
     private val results: ResultsStore,
+    private val historyStore: HistoryStore,
     private val executor: RunExecutor,
     private val comparator: TargetComparator,
     private val validator: RequestValidator,
@@ -103,15 +107,27 @@ class TestRunService(
 
     /** A Test Run whose heartbeat stopped is not running any more, whatever its record says: report it as ERROR (abandoned). */
     fun reportAbandoned(record: RunRecord): RunRecord {
-        if (record.status != RunStatus.RUNNING) return record
-        val silentFor = Duration.between(Instant.parse(record.heartbeatAt), Instant.now())
-        if (silentFor <= props.heartbeatStaleAfter) return record
-        return record.copy(
-            status = RunStatus.ABANDONED,
-            verdict = Verdict.ERROR,
-            reason = "Test Run abandoned: its heartbeat stopped at ${record.heartbeatAt}, so the service instance running it is presumed dead. Trigger a new Test Run.",
-        )
+        if (!isAbandoned(record.status, record.heartbeatAt)) return record
+        return record.copy(status = RunStatus.ABANDONED, verdict = Verdict.ERROR, reason = abandonedReason(record.heartbeatAt))
     }
+
+    fun isAbandoned(status: RunStatus, heartbeatAt: String) =
+        status == RunStatus.RUNNING && Duration.between(Instant.parse(heartbeatAt), Instant.now()) > props.heartbeatStaleAfter
+
+    fun abandonedReason(heartbeatAt: String) =
+        "Test Run abandoned: its heartbeat stopped at $heartbeatAt, so the service instance running it is presumed dead. Trigger a new Test Run."
+
+    /** A Pipeline's past Test Runs, most recent first, read from the run records in MinIO with DuckDB (ADR 0002). */
+    fun history(pipeline: String, from: String?, to: String?, limit: Int): History = History(
+        pipeline,
+        historyStore.list(pipeline, from, to, limit).map { entry ->
+            if (isAbandoned(entry.status, entry.heartbeatAt)) {
+                entry.copy(status = RunStatus.ABANDONED, verdict = Verdict.ERROR, reason = abandonedReason(entry.heartbeatAt))
+            } else {
+                entry
+            }
+        },
+    )
 
     private fun execute(run: ActiveRun) {
         val started = run.record

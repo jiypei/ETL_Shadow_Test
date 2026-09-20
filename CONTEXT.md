@@ -56,12 +56,16 @@ _Avoid_: Unkeyed table
 A Target with no Production counterpart yet, declared as such in its Comparison Config so it is skipped rather than reported as an error.
 _Avoid_: Baseline-less target
 
+**Missing Target**:
+A Target that exists in only one Environment, for example one not yet deployed to Production. It is reported as ERROR. A Target name that exists in neither Environment is not a Missing Target but a typo, and the request naming it is rejected.
+_Avoid_: Absent table, orphan
+
 **Mismatch**:
 Any difference between Staging and Production not permitted by the Comparison Config.
 _Avoid_: Discrepancy, defect
 
 **Verdict**:
-The outcome of a Test Run, per Target and per Pipeline: PASS, FAIL, or ERROR when the comparison could not be completed. ERROR is never PASS. A New Target is reported as SKIPPED and does not count. A Pipeline is FAIL if any Target is FAIL, otherwise ERROR if any is ERROR, otherwise PASS.
+The outcome of a Test Run, per Target and per Pipeline: PASS, FAIL, or ERROR when the comparison could not be completed. ERROR is never PASS. A New Target is reported as SKIPPED and does not count. A Pipeline is FAIL if any Target is FAIL, otherwise ERROR if any is ERROR, otherwise SKIPPED if every Target was skipped (nothing was verified), otherwise PASS.
 _Avoid_: Result, status
 
 **Cutover Readiness**:

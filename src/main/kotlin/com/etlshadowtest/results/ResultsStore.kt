@@ -51,7 +51,7 @@ class ResultsStore(props: ShadowProperties, private val mapper: ObjectMapper) {
     @Volatile
     private var bucketChecked = false
 
-    private fun ensureBucket() {
+    fun ensureBucket() {
         if (bucketChecked) return
         if (!client.bucketExists(BucketExistsArgs.builder().bucket(bucket).build())) {
             client.makeBucket(MakeBucketArgs.builder().bucket(bucket).build())

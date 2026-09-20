@@ -2,7 +2,7 @@ package com.etlshadowtest.parquet
 
 import com.etlshadowtest.api.Location
 import com.etlshadowtest.config.MinioProperties
-import com.etlshadowtest.duckdb.Workspace
+import com.etlshadowtest.duckdb.DuckS3
 import com.etlshadowtest.run.RunContext
 import com.etlshadowtest.target.AggregateSpec
 import com.etlshadowtest.target.AggregateValues
@@ -12,7 +12,6 @@ import com.etlshadowtest.target.ColumnMeta
 import com.etlshadowtest.target.KeyValues
 import com.etlshadowtest.target.TargetSide
 import java.math.BigDecimal
-import java.net.URI
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
@@ -37,20 +36,7 @@ class ParquetSide(override val environment: String, private val minio: MinioProp
     private fun metadataConnection(): Connection = (metadataDb as org.duckdb.DuckDBConnection).duplicate()
 
     /** Makes s3:// paths for this Environment's bucket readable on [connection]. */
-    fun configure(connection: Connection) {
-        val uri = URI(minio.endpoint)
-        val endpoint = if (uri.port > 0) "${uri.host}:${uri.port}" else uri.host
-        connection.createStatement().use { s ->
-            if (extensionDirectory != null) s.execute("SET extension_directory = ${Workspace.literal(extensionDirectory)}")
-            s.execute("INSTALL httpfs")
-            s.execute("LOAD httpfs")
-            s.execute(
-                "CREATE OR REPLACE TEMPORARY SECRET s3_$environment (TYPE S3, KEY_ID ${Workspace.literal(minio.accessKey)}, " +
-                    "SECRET ${Workspace.literal(minio.secretKey)}, ENDPOINT ${Workspace.literal(endpoint)}, URL_STYLE 'path', " +
-                    "USE_SSL ${uri.scheme == "https"}, SCOPE ${Workspace.literal("s3://${minio.bucket}")})",
-            )
-        }
-    }
+    fun configure(connection: Connection) = DuckS3.configure(connection, "s3_$environment", minio, extensionDirectory)
 
     private fun connection(ctx: RunContext): Connection {
         val ws = ctx.workspace()

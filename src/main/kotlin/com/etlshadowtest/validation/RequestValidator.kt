@@ -14,7 +14,8 @@ import com.etlshadowtest.target.TargetSides
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
 
-private val SAFE_NAME = Regex("[A-Za-z0-9._-]{1,100}")
+/** Pipeline and Target names end up in object keys and paths, so they are restricted to a safe alphabet. */
+val SAFE_NAME = Regex("[A-Za-z0-9._-]{1,100}")
 
 /** Rejects a request up front, before any Test Run exists, with an error that names the problem. */
 @Component

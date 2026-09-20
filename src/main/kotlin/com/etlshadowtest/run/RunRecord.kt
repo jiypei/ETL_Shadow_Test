@@ -82,3 +82,22 @@ data class CountDifferencesResult(
 
 /** A Row Fingerprint (a stand-in for one distinct row content) and how often it occurs on each side. */
 data class CountDifference(val fingerprint: String, val staging: Long, val production: Long)
+
+/** One line of a Pipeline's history: what a release manager needs to judge readiness. */
+data class HistoryEntry(
+    val testRunId: String,
+    val status: RunStatus,
+    val startedAt: String,
+    val finishedAt: String?,
+    /** Not part of the answer; used to tell a Test Run that is still alive from one that was abandoned. */
+    @get:com.fasterxml.jackson.annotation.JsonIgnore val heartbeatAt: String,
+    val scope: ScopeRange?,
+    val verdict: Verdict?,
+    val reason: String?,
+    val targets: List<TargetVerdict>,
+    val unverifiedTargets: List<String>,
+)
+
+data class TargetVerdict(val name: String, val verdict: Verdict)
+
+data class History(val pipeline: String, val testRuns: List<HistoryEntry>)
