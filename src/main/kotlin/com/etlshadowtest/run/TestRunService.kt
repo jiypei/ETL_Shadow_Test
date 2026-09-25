@@ -4,6 +4,7 @@ import com.etlshadowtest.api.ApiException
 import com.etlshadowtest.api.TriggerRequest
 import com.etlshadowtest.compare.TargetComparator
 import com.etlshadowtest.config.ShadowProperties
+import com.etlshadowtest.duckdb.DuckDbMetrics
 import com.etlshadowtest.duckdb.Workspace
 import com.etlshadowtest.validation.RequestValidator
 import com.etlshadowtest.results.HistoryStore
@@ -40,6 +41,7 @@ class TestRunService(
     private val validator: RequestValidator,
     private val props: ShadowProperties,
     private val webhook: WebhookNotifier,
+    private val duckDbMetrics: DuckDbMetrics,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
     private val active = ConcurrentHashMap<String, ActiveRun>()
@@ -136,7 +138,7 @@ class TestRunService(
     }
 
     private fun newWorkspace(testRunId: String) =
-        Workspace(Path.of(props.duckdb.tempDirectory).resolve(testRunId), props.duckdb.memoryLimit, props.duckdb.threads)
+        Workspace(Path.of(props.duckdb.tempDirectory).resolve(testRunId), props.duckdb.memoryLimit, props.duckdb.threads, duckDbMetrics)
 
     fun get(pipeline: String, testRunId: String): RunRecord {
         val record = results.read(pipeline, testRunId) ?: throw ApiException(HttpStatus.NOT_FOUND, "Test Run $testRunId not found")

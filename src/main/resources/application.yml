@@ -8,6 +8,16 @@ spring:
       write-bigdecimal-as-plain: true
     default-property-inclusion: always
 
+# Metrics for Prometheus and Grafana (docs/monitoring.md). Actuator endpoints are outside /api/**, so they need no token.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
 # Environment connections and credentials live here (service configuration), never in requests.
 shadow:
   heartbeat-interval: 5s

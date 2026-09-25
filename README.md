@@ -282,6 +282,7 @@ shadow:
 - **DuckDB `httpfs` extension** is installed on first use. On a cluster without internet access, pre-install it and set `duckdb.extension-directory`.
 - **Production access:** read-only account only. Prefer a read replica, otherwise run off-peak.
 - **Health check:** `GET /actuator/health`.
+- **Metrics:** `GET /actuator/prometheus` (no token) reports JVM and DuckDB CPU and memory. Scrape setup and the Grafana dashboard: [`docs/monitoring.md`](docs/monitoring.md).
 
 ## Development
 
@@ -303,4 +304,5 @@ gradle bootRun                             # run the service (needs the shadow.*
 
 - [`CONTEXT.md`](CONTEXT.md): the glossary. Use its terms exactly.
 - [`docs/operations.md`](docs/operations.md): API reference, comparison rules, configuration and deployment.
+- [`docs/monitoring.md`](docs/monitoring.md): metrics, Prometheus scraping and the Grafana dashboard.
 - [`docs/adr/`](docs/adr/): architecture decision records.

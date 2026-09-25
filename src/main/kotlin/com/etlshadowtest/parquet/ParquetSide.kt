@@ -2,6 +2,7 @@ package com.etlshadowtest.parquet
 
 import com.etlshadowtest.api.Location
 import com.etlshadowtest.config.MinioProperties
+import com.etlshadowtest.duckdb.DuckDbMetrics
 import com.etlshadowtest.duckdb.DuckS3
 import com.etlshadowtest.run.RunContext
 import com.etlshadowtest.target.AggregateQuery
@@ -20,16 +21,24 @@ import java.sql.DriverManager
 import java.sql.SQLException
 
 /** Parquet Targets in one Environment's MinIO bucket. DuckDB reads the data in place; nothing is copied into the service first. */
-class ParquetSide(override val environment: String, private val minio: MinioProperties, private val extensionDirectory: String?) : TargetSide, AutoCloseable {
+class ParquetSide(
+    override val environment: String,
+    private val minio: MinioProperties,
+    private val extensionDirectory: String?,
+    private val metrics: DuckDbMetrics,
+) : TargetSide, AutoCloseable {
     /** A small in-memory DuckDB, used only to read Parquet footers for metadata. Data queries run in the Test Run's workspace. */
     @Volatile
     private var metadataStarted = false
+
+    private var metadataWatch: DuckDbMetrics.Watch? = null
 
     private val metadataDb: Connection by lazy {
         metadataStarted = true
         DriverManager.getConnection("jdbc:duckdb:").also { c ->
             c.createStatement().use { it.execute("SET memory_limit = '256MB'") }
             configure(c)
+            metadataWatch = metrics.watch(DuckDbMetrics.Role.PARQUET_SCHEMA, c)
         }
     }
 
@@ -87,6 +96,7 @@ class ParquetSide(override val environment: String, private val minio: MinioProp
     }
 
     override fun close() {
+        metadataWatch?.close()
         if (metadataStarted) metadataDb.close()
     }
 }
