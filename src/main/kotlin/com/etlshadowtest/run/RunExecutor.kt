@@ -15,7 +15,7 @@ class RunExecutorConfig {
     @Bean("runExecutor", destroyMethod = "")
     fun runExecutor(props: ShadowProperties): RunExecutor {
         val pool = Executors.newFixedThreadPool(props.maxConcurrentRuns.coerceAtLeast(1)) { r ->
-            Thread(r, "test-run").apply { isDaemon = true }
+            Thread(r, CpuMetrics.RUN_THREAD).apply { isDaemon = true }
         }
         return RunExecutor { pool.execute(it) }
     }

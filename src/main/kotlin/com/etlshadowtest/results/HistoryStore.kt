@@ -1,6 +1,7 @@
 package com.etlshadowtest.results
 
 import com.etlshadowtest.config.ShadowProperties
+import com.etlshadowtest.duckdb.DuckDbMetrics
 import com.etlshadowtest.duckdb.DuckS3
 import com.etlshadowtest.duckdb.Workspace
 import com.etlshadowtest.run.HistoryEntry
@@ -18,7 +19,14 @@ import java.sql.SQLException
 
 /** Answers history queries by having DuckDB scan the Test Run records in MinIO (ADR 0002); no database is involved. */
 @Component
-class HistoryStore(private val props: ShadowProperties, private val results: ResultsStore, private val mapper: ObjectMapper) {
+class HistoryStore(
+    private val props: ShadowProperties,
+    private val results: ResultsStore,
+    private val mapper: ObjectMapper,
+    private val metrics: DuckDbMetrics,
+) {
+    private var watch: DuckDbMetrics.Watch? = null
+
     private val root: Connection by lazy {
         DriverManager.getConnection("jdbc:duckdb:").also { c ->
             c.createStatement().use {
@@ -27,6 +35,7 @@ class HistoryStore(private val props: ShadowProperties, private val results: Res
                 it.execute("SET preserve_insertion_order = false")
             }
             DuckS3.configure(c, "s3_results", props.results.minio, props.duckdb.extensionDirectory)
+            watch = metrics.watch(DuckDbMetrics.Role.HISTORY, c)
         }
     }
 
@@ -35,6 +44,7 @@ class HistoryStore(private val props: ShadowProperties, private val results: Res
 
     @PreDestroy
     fun close() {
+        watch?.close()
         if (started) root.close()
     }
 
